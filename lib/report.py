@@ -37,6 +37,10 @@ def _findings_html(findings: list[dict]) -> str:
                  + f" &middot; from task <code>{_esc(finding.get('task_id'))}</code></p>"]
         if finding.get("summary"):
             block.append(f"<p>{_esc(finding['summary'])}</p>")
+        if finding.get("remediation"):
+            block.append(f"<p><strong>Remediation:</strong> {_esc(finding['remediation'])}</p>")
+        if finding.get("verification"):
+            block.append(f"<p><strong>Review:</strong> {_esc(finding['verification'])} — {_esc(finding.get('verification_reason'))}</p>")
         if finding.get("evidence"):
             block.append("<pre><code>"
                          + _esc(json.dumps(finding["evidence"], indent=2)) + "</code></pre>")
@@ -49,23 +53,40 @@ def _rows(pairs: list[tuple[str, str]]) -> str:
     return f"<table><tbody>{body}</tbody></table>"
 
 
+def _run_link(step: dict) -> str:
+    url = step.get("url", "")
+    if isinstance(url, str) and url.startswith("https://github.com/"):
+        return f'<a href="{_esc(url)}">{_esc(step.get("run_id", "View run"))}</a>'
+    return ""
+
+
 def render(*, target: str, run_id: str, report: dict, provenance: dict,
            plan: list[dict]) -> str:
     grounded = provenance["grounded"]
     summary = _rows([
+        ("Audit status", _esc(report.get("status", "unspecified"))),
         ("Findings reported", str(len(report.get("findings", []) or []))),
         ("Findings grounded", str(provenance["counts"]["grounded"])),
         ("Findings rejected", str(provenance["counts"]["rejected"])),
-        ("Sub-agent tasks", str(len(plan))),
+        ("Workflow tasks", str(len(plan))),
     ])
     if report.get("summary"):
         summary += f'<p>{_esc(report["summary"])}</p>'
+    coverage = report.get("coverage", {})
+    if coverage:
+        summary += "<h3>Coverage</h3><table><thead><tr><th>Employee</th><th>Status</th><th>Result / limitations</th></tr></thead><tbody>"
+        for name, state in coverage.items():
+            summary += (f"<tr><td>{_esc(name)}</td><td>{_esc(state.get('status'))}</td>"
+                        f"<td>{_esc(state.get('summary'))}<br>{_esc(state.get('limitations'))}</td></tr>")
+        summary += "</tbody></table>"
 
     plan_rows = "".join(
         f"<tr><td><code>{_esc(step.get('task_id'))}</code></td>"
-        f"<td>{_esc(step.get('role'))}</td><td>{_esc(step.get('target'))}</td></tr>"
+        f"<td>{_esc(step.get('employee', step.get('role')))}</td>"
+        f"<td>{_esc(step.get('tool'))}</td><td>{_esc(step.get('status'))}</td>"
+        f"<td>{_esc(step.get('target'))}</td><td>{_run_link(step)}</td></tr>"
         for step in plan)
-    plan_html = (f"<table><thead><tr><th>Task</th><th>Role</th><th>Target</th></tr></thead>"
+    plan_html = (f"<table><thead><tr><th>Task</th><th>Employee</th><th>Tool</th><th>Status</th><th>Target</th><th>Workflow</th></tr></thead>"
                  f"<tbody>{plan_rows}</tbody></table>" if plan
                  else '<p class="note">No sub-agent was dispatched.</p>')
 
@@ -74,7 +95,7 @@ def render(*, target: str, run_id: str, report: dict, provenance: dict,
                 "<pre><code>" + _esc(json.dumps(provenance["rejected"], indent=2))
                 + "</code></pre>")
     else:
-        prov = '<p>All reported findings were grounded in a task result.</p>'
+        prov = '<p>All reported findings match saved task results. Evidence linkage does not prove exploitability; review verdicts describe remaining uncertainty.</p>'
 
     limitations = report.get("limitations") or (
         "This audit reflects only the roles the orchestrator chose to run and what their "

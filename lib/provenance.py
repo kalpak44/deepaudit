@@ -21,7 +21,9 @@ def _load_tasks(run_root: Path) -> dict[str, dict]:
         return tasks
     for path in sorted(tasks_dir.glob("*.json")):
         try:
-            tasks[path.stem] = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                tasks[path.stem] = payload
         except ValueError:
             continue
     return tasks
@@ -52,7 +54,10 @@ def check(report: dict, run_root: Path) -> dict:
         if task_id not in tasks:
             rejected.append({"reason": "unknown_task", "task_id": task_id, "id": identifier})
         elif key and key in task_keys.get(task_id, set()):
-            grounded.append(finding)
+            # Use the recorded observation, never model-rewritten severity/evidence.
+            original = next(f for f in tasks[task_id].get("findings", [])
+                            if isinstance(f, dict) and str(f.get("id") or f.get("title") or f.get("summary") or "").strip().lower() == key)
+            grounded.append({**original, "task_id": task_id})
         else:
             rejected.append({"reason": "not_in_task_result", "task_id": task_id,
                              "id": identifier})

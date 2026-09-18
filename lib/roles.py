@@ -3,7 +3,7 @@
 The role.md is both the documentation and the agent's system prompt: its first paragraph
 (everything up to the first blank line after the heading) is the one-line summary the root
 agent sees in its roster; the whole file is the prompt handed to the role when it runs.
-Adding a capability is adding a folder and a workflow, never editing this file.
+Employee prompts are independent of the generic workflow tool catalog.
 """
 from __future__ import annotations
 
@@ -44,8 +44,7 @@ def list_roles() -> list[dict]:
         role_md = entry / "role.md"
         if _NAME_RE.fullmatch(entry.name) and role_md.is_file():
             roles.append({"role": entry.name,
-                          "summary": _summary(role_md.read_text(encoding="utf-8")),
-                          "workflow": f"role-{entry.name}.yml"})
+                          "summary": _summary(role_md.read_text(encoding="utf-8"))})
     return roles
 
 

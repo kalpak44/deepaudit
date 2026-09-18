@@ -14,6 +14,7 @@ import os
 import re
 import ssl
 import time
+import threading
 from collections.abc import Callable
 
 DEFAULT_MODEL = "deepseek-flash"
@@ -40,6 +41,8 @@ class DeepSeekClient:
         self.max_requests = max_requests
         self.max_tokens = max_tokens
         self.requests = 0
+        self._lock = threading.Lock()
+        self._slots = threading.BoundedSemaphore(4)
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def _post(self, payload: dict) -> tuple[int, bytes]:
@@ -67,11 +70,13 @@ class DeepSeekClient:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         for attempt in range(2):
-            if self.requests >= self.max_requests:
-                raise DeepSeekError("API request budget exhausted")
-            self.requests += 1
+            with self._lock:
+                if self.requests >= self.max_requests:
+                    raise DeepSeekError("API request budget exhausted")
+                self.requests += 1
             try:
-                status, raw = self._post(payload)
+                with self._slots:
+                    status, raw = self._post(payload)
             except (OSError, http.client.HTTPException) as exc:
                 raise DeepSeekError("DeepSeek connection failed or timed out") from exc
             if status in (429, 500, 502, 503, 504) and attempt == 0:
@@ -86,10 +91,11 @@ class DeepSeekClient:
                 if not isinstance(message, dict) or message.get("role") != "assistant":
                     raise DeepSeekError("Invalid assistant message")
                 if isinstance(data.get("usage"), dict):
-                    for key in self.usage:
-                        amount = data["usage"].get(key, 0)
-                        if type(amount) is int and amount >= 0:
-                            self.usage[key] += amount
+                    with self._lock:
+                        for key in self.usage:
+                            amount = data["usage"].get(key, 0)
+                            if type(amount) is int and amount >= 0:
+                                self.usage[key] += amount
                 return {k: message[k] for k in ("role", "content", "tool_calls")
                         if k in message}
             except (ValueError, KeyError, IndexError, TypeError) as exc:
@@ -101,7 +107,9 @@ Handler = Callable[[dict], dict]
 
 
 def agent_loop(client, system_prompt: str, task: str, tools: dict[str, tuple[dict, Handler]],
-               *, max_steps: int = 12, log: Callable[[str], None] = lambda _: None) -> dict:
+               *, max_steps: int = 12, log: Callable[[str], None] = lambda _: None,
+               terminal_tools: tuple[str, ...] = (), require_terminal: bool = False,
+               max_context_chars: int = 160000) -> dict:
     """Run one role to completion.
 
     `tools` maps a tool name to (json-schema, handler). The handler takes the parsed
@@ -117,11 +125,19 @@ def agent_loop(client, system_prompt: str, task: str, tools: dict[str, tuple[dic
     executed = 0
     stopped = "step_limit"
     for step in range(max_steps):
+        if len(json.dumps(messages, ensure_ascii=True)) > max_context_chars:
+            return {"content": "", "steps": step, "tool_calls": executed, "stopped": "context_limit"}
         log(f"[step {step + 1}/{max_steps}]")
         message = client.complete(messages, schemas)
+        if message.get("content"):
+            log("[message] " + str(message["content"]))
         calls = message.get("tool_calls") or []
         messages.append(message)
         if not calls:
+            if require_terminal:
+                messages.append({"role": "user", "content":
+                                 "Continue the assignment and use the completion tool. If blocked, report the limitation explicitly."})
+                continue
             return {"content": message.get("content") or "", "steps": step + 1,
                     "tool_calls": executed, "stopped": "final_message"}
         if not isinstance(calls, list) or len(calls) > 16:
@@ -138,10 +154,14 @@ def agent_loop(client, system_prompt: str, task: str, tools: dict[str, tuple[dic
                 if name not in tools:
                     result = {"error": "unknown_tool", "allowed": sorted(tools)}
                 else:
-                    log(f"[tool] {name}")
+                    log(f"[tool] {name} " + json.dumps(args, ensure_ascii=True))
                     result = tools[name][1](args)
             except Exception as exc:  # a tool failure is data for the model, not a crash
                 result = {"error": "tool_failed", "detail": str(exc)[:500]}
+            log(f"[result] {name} " + json.dumps(result, ensure_ascii=True)[:1200])
             messages.append({"role": "tool", "tool_call_id": call_id,
-                             "content": json.dumps(result, ensure_ascii=True)[:200_000]})
+                             "content": json.dumps(result, ensure_ascii=True)})
+            if name in terminal_tools and result.get("accepted") is True:
+                return {"content": "", "steps": step + 1,
+                        "tool_calls": executed, "stopped": name}
     return {"content": "", "steps": max_steps, "tool_calls": executed, "stopped": stopped}

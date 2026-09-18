@@ -1,5 +1,39 @@
 # DeepAudit
 
+## Current architecture
+
+DeepAudit is one Python-supervised audit flow running in GitHub Actions. Roles are employee
+playbooks, not nested workflows: each employee gets a short isolated planning session, and
+the supervisor carries only its concise plan and completed-tool evidence forward. This keeps
+the audit trace visible while avoiding a growing shared model context.
+
+```text
+audit.yaml (target) -> Python supervisor -> employee session / plan
+                                      -> tool_<name>.yml -> evidence artifact
+                                      -> record grounded result -> report.html artifact
+```
+
+Every approved workflow tool is generic and available to every employee. The employee prompt
+decides which is appropriate; Python only permits a workflow that exists as
+`.github/workflows/tool_<name>.yaml`, always pins it to the original target, waits through
+`gh`, downloads `evidence-<task_id>`, and prints `AUDIT`, `AGENT`, `TOOL`, `RESULT`, and
+`REPORT` events to the Actions console. The final job summary links to the downloadable
+artifact bundle containing `report.html`.
+
+Run **Audit** (`.github/workflows/audit.yaml`) with `target` and `authorized=true`. It needs
+`DEEPSEEK_API_KEY`, optional `DEEPSEEK_MODEL`, and a `GH_ADMIN_TOKEN` PAT with workflow
+dispatch permission.
+
+### Add a tool
+
+Create `.github/workflows/tool_<name>.yaml` with the standard inputs `task_id`, `target`,
+`params`, and `run_name`. It may install/run any reviewed application (for example nmap) and
+must upload its raw result as artifact `evidence-${{ inputs.task_id }}`. The supervisor
+discovers it automatically. Put tool selection guidance in employee `roles/<name>/role.md`;
+no Python routing change is required.
+
+---
+
 An authorized web-audit system built as an **agent hierarchy running on GitHub Actions**. You
 dispatch one workflow with a target; a root agent decides which checks to run, launches each
 as its own parallel workflow, reads their results, and assembles a report. The repository is

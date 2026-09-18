@@ -23,7 +23,7 @@ root agent (audit-root.yml)  -- knows the roster of roles, decides what to run
         |--------------> role-<other>.yml         (dispatched in parallel)
         |  <-----------  each role returns a typed result the root downloads
         v
-root assembles a report -> deterministic provenance check -> report.html, committed + zipped
+root assembles a report -> deterministic provenance check -> report.html, summary + zipped artifact
 ```
 
 - **Roles are folders.** `roles/<name>/role.md` is both the documentation and the agent's
@@ -53,8 +53,10 @@ The model orchestrates and interprets; it does not get the last word on what is 
 ## Running it
 
 Dispatch the **Audit** workflow (`workflow_dispatch`) with a `target` and the `authorized`
-checkbox. The job runs the root agent, commits the run under `audits/root-<id>/`, and links a
-zip of it from the run summary; open `report.html` from the zip.
+checkbox. The job runs the root agent and delivers the result two ways only: a table in the
+run summary, and a zip of the run attached as a workflow artifact — nothing is committed to
+the repository. Open `report.html` from the zip. (`audits/` is where a run is assembled
+inside the runner and is gitignored.)
 
 Required in the repository:
 

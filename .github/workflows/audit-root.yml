@@ -12,10 +12,12 @@ on:
         default: false
         type: boolean
 
-# The root agent dispatches sub-agent roles as their own workflow runs. A push made with
-# the default GITHUB_TOKEN starts no run, so this job authenticates gh with a PAT instead.
+# The audit run is delivered as the run summary and a zipped artifact; nothing is committed,
+# so the job needs no write access. Root dispatches sub-agent roles with a PAT (a workflow
+# dispatched with the default GITHUB_TOKEN never starts a run) — that PAT, not this scope, is
+# what gives it dispatch power.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: deepaudit-root-${{ github.repository }}
@@ -46,20 +48,6 @@ jobs:
           set +e
           python -m lib.run_root --target "${{ inputs.target }}"
           echo "code=$?" >> "$GITHUB_OUTPUT"
-
-      - name: Commit the audit run
-        if: ${{ always() }}
-        env:
-          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          run_dir="audits/root-${{ github.run_id }}"
-          if [ -d "$run_dir" ]; then
-            git add -- "$run_dir"
-            git commit -m "audit: ${{ inputs.target }} (run ${{ github.run_id }})" || true
-            git push || true
-          fi
 
       - name: Bundle the run
         id: bundle

@@ -17,3 +17,6 @@ dist/
 htmlcov/
 # audits/ is intentionally not ignored: explicit --git-commit can publish verified reports.
 # Treat real target metadata as confidential; use a private repository.
+
+# Audit runs are delivered as the run summary + a zipped artifact, never committed.
+audits/

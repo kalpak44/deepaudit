@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
@@ -35,6 +36,18 @@ SPECS = {
         "code": {"type": "string", "default": "", "maxLength": 10000},
         "inputs": {"type": "array", "default": [], "maxItems": 8, "items": {"type": "object", "properties": {
             "task_id": {"type": "string", "maxLength": 40}}, "required": ["task_id"]}}}),
+    "toolbox": ("Generic worker: install the apt/pip packages you name, then run your Python (WITH network) in the "
+                "ephemeral audit runner. Returns install logs, the script's stdout/stderr and any JSON it writes to "
+                "the $OUT path. The authorized target is in $AUDIT_TARGET. Batch installs into one call to avoid "
+                "repeated setup and take bigger steps; iterate over a few calls, reading results between. This is "
+                "general code execution and is NOT technically confined to the target: act only against the one "
+                "authorized target.", {
+        "apt": {"type": "array", "default": [], "maxItems": 20,
+                "items": {"type": "string", "maxLength": 100, "pattern": r"[a-z0-9][a-z0-9+._-]*"}},
+        "pip": {"type": "array", "default": [], "maxItems": 20,
+                "items": {"type": "string", "maxLength": 100, "pattern": r"[A-Za-z0-9][A-Za-z0-9._\[\]<>=!~,+*-]*"}},
+        "code": {"type": "string", "default": "", "maxLength": 20000},
+        "timeout": {"type": "integer", "default": 120, "minimum": 1, "maximum": 420}}),
 }
 
 
@@ -53,9 +66,18 @@ def _scalar(key, value, schema):
 
 def _array(key, value, schema):
     if not isinstance(value, list) or len(value) > schema.get("maxItems", 16):
-        raise ValueError(f"{key} must be an array of at most {schema.get('maxItems', 16)} objects")
-    item_props = schema["items"]["properties"]
-    required = schema["items"].get("required", [])
+        raise ValueError(f"{key} must be an array of at most {schema.get('maxItems', 16)} items")
+    items = schema["items"]
+    if items["type"] != "object":
+        cleaned = []
+        for index, element in enumerate(value):
+            element = _scalar(f"{key}[{index}]", element, items)
+            if "pattern" in items and not re.fullmatch(items["pattern"], element):
+                raise ValueError(f"{key} items must match {items['pattern']!r} (and not start with '-')")
+            cleaned.append(element)
+        return cleaned
+    item_props = items["properties"]
+    required = items.get("required", [])
     cleaned = []
     for item in value:
         if not isinstance(item, dict) or set(item) - item_props.keys():
@@ -70,8 +92,8 @@ def _array(key, value, schema):
 
 
 def validate_params(tool: str, params: dict) -> dict:
-    if not isinstance(params, dict) or len(json.dumps(params)) > 24000:
-        raise ValueError("params must be a JSON object of at most 24000 characters")
+    if not isinstance(params, dict) or len(json.dumps(params)) > 32000:
+        raise ValueError("params must be a JSON object of at most 32000 characters")
     if tool not in SPECS:
         return params  # custom workflows own their validation
     properties = SPECS[tool][1]
@@ -97,7 +119,6 @@ def catalog(workflows: Path) -> list[dict]:
         if path.suffix not in (".yaml", ".yml"):
             continue
         name = path.stem[5:]
-        import re
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,38}", name):
             continue
         if name in entries:

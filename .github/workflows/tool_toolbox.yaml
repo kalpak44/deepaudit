@@ -1,0 +1,32 @@
+name: tool_toolbox
+run-name: ${{ inputs.run_name || format('deepaudit toolbox {0}', inputs.task_id) }}
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Unique task correlation id
+        required: true
+        type: string
+      target:
+        description: One authorized public HTTP(S) URL or host
+        required: true
+        type: string
+      params:
+        description: JSON parameters from the tool catalog (apt, pip, code, timeout)
+        required: false
+        default: '{}'
+        type: string
+      run_name:
+        description: Correlation title used by the supervisor
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  collect:
+    uses: ./.github/workflows/_collect.yaml
+    with:
+      tool: toolbox
+      target: ${{ inputs.target }}
+      params: ${{ inputs.params }}
+      task_id: ${{ inputs.task_id }}

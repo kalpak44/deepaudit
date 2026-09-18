@@ -11,6 +11,7 @@ import re
 import socket
 import ssl
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -287,6 +288,56 @@ def collect_script(params, evidence):
                            "analysis, and treat conclusions as interpretation to be verified."}
 
 
+def _script_env(target: str, out_path: str) -> dict:
+    """Runner env minus anything token-shaped, plus the authorized target and result path."""
+    unsafe = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|GITHUB_|ACTIONS_", re.I)
+    env = {k: v for k, v in os.environ.items() if not unsafe.search(k)}
+    env.update(AUDIT_TARGET=target, OUT=out_path)
+    return env
+
+
+def _install(argv: list[str], packages: list[str]) -> dict:
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=360, check=False)
+    return {"packages": packages, "returncode": result.returncode, "ok": result.returncode == 0,
+            "output": (result.stdout + result.stderr)[-4000:]}
+
+
+def collect_toolbox(url, params):
+    """Install named packages, then run the model's Python with network in the ephemeral runner."""
+    apt, pip, code, timeout = params["apt"], params["pip"], params["code"], params["timeout"]
+    if not code.strip():
+        raise ValueError("Provide Python in `code` to run; declare needed packages in apt/pip")
+    install = {}
+    if apt:
+        subprocess.run(["sudo", "apt-get", "update", "-qq"], capture_output=True, text=True, timeout=180, check=False)
+        install["apt"] = _install(["sudo", "apt-get", "install", "-y", "-qq", *apt], apt)
+    if pip:
+        install["pip"] = _install([sys.executable, "-m", "pip", "install", "--quiet",
+                                   "--disable-pip-version-check", *pip], pip)
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "script.py"
+        script.write_text(code, encoding="utf-8")
+        out = Path(tmp) / "out.json"
+        try:
+            proc = subprocess.run([sys.executable, str(script)], cwd=tmp, env=_script_env(url, str(out)),
+                                  capture_output=True, text=True, timeout=timeout, check=False)
+            run = {"returncode": proc.returncode, "ok": proc.returncode == 0,
+                   "stdout": (proc.stdout or "")[-8000:], "stderr": (proc.stderr or "")[-4000:]}
+        except subprocess.TimeoutExpired:
+            run = {"ok": False, "timed_out": timeout, "error": f"script exceeded {timeout}s"}
+        if out.is_file():
+            raw = out.read_text(encoding="utf-8", errors="replace")[:200000]
+            try:
+                run["result"] = json.loads(raw)
+            except ValueError:
+                run["result_text"] = raw[:8000]
+    return {"plan": {"apt": apt, "pip": pip, "timeout": timeout}, "install": install, "run": run,
+            "limitations": "General code execution with network in an ephemeral, tokenless, disposable runner; it is "
+                           "NOT confined to the target at the technical level, so only issue requests against the one "
+                           "authorized target ($AUDIT_TARGET). Results come from tools you chose and installed — "
+                           "record exactly what ran; a nonzero return code is a coverage gap, not a passing check."}
+
+
 def collect_command(tool, url, params):
     u = urlsplit(url)
     address = public_address(u.hostname, origin(url)[2])
@@ -331,7 +382,7 @@ def main(argv=None):
         params = validate_params(a.tool, json.loads(a.params))
         # All collectors validate public resolution again before connecting.
         handlers = {"http": collect_http, "crawl": collect_crawl, "tls": collect_tls,
-                    "exposure": collect_exposure, "osv": collect_osv}
+                    "exposure": collect_exposure, "osv": collect_osv, "toolbox": collect_toolbox}
         if a.tool == "script":
             # Evidence is injected by the supervisor; the sandbox never touches the target or network.
             output = collect_script(params, json.loads(a.evidence or "{}"))

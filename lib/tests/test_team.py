@@ -10,7 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from lib import sandbox
-from lib.collect import collect_command, collect_http, collect_osv, collect_script, target_url, public_address
+from lib.collect import (collect_command, collect_http, collect_osv, collect_script, collect_toolbox,
+                         target_url, public_address)
 from lib.console import Console
 from lib.deepseek import agent_loop
 from lib.run_audit import Audit
@@ -380,6 +381,51 @@ class CollectorTests(unittest.TestCase):
                              {"t1": {"output": {}}})
         self.assertEqual(out["result"], 1)
         self.assertEqual(out["analyzed_task_ids"], ["t1"])
+
+    def test_toolbox_params_reject_flag_injection_and_bounds(self):
+        ok = validate_params("toolbox", {"apt": ["nikto", "curl"], "pip": ["requests==2.31.0"],
+                                         "code": "print(1)", "timeout": 90})
+        self.assertEqual(ok["apt"], ["nikto", "curl"])
+        self.assertEqual(validate_params("toolbox", {"code": "x"})["timeout"], 120)
+        for bad in ({"apt": ["-rf"], "code": "x"}, {"apt": ["a b"], "code": "x"},
+                    {"pip": ["requests;rm"], "code": "x"}, {"apt": ["a"] * 21, "code": "x"},
+                    {"code": "x" * 20001}, {"code": "x", "timeout": 5000}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_params("toolbox", bad)
+
+    def test_toolbox_installs_then_runs_script_with_token_scrubbed_env(self):
+        calls, seen_env = [], {}
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if str(argv[-1]).endswith("script.py"):
+                seen_env.update(kwargs["env"])
+                Path(kwargs["env"]["OUT"]).write_text(json.dumps({"target": kwargs["env"]["AUDIT_TARGET"]}))
+                return SimpleNamespace(returncode=0, stdout="ran\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="installed\n", stderr="")
+
+        with patch.dict("lib.collect.os.environ", {"GITHUB_TOKEN": "s", "ACTIONS_RUNTIME_TOKEN": "s", "PATH": "/bin"}, clear=True), \
+             patch("lib.collect.subprocess.run", side_effect=fake_run):
+            out = collect_toolbox("https://example.test/", validate_params("toolbox",
+                {"apt": ["nikto"], "pip": ["requests"], "code": "pass", "timeout": 30}))
+        self.assertTrue(out["install"]["apt"]["ok"] and out["run"]["ok"])
+        self.assertEqual(out["run"]["result"], {"target": "https://example.test/"})
+        # runner secrets never reach the model-authored script
+        self.assertNotIn("GITHUB_TOKEN", seen_env)
+        self.assertNotIn("ACTIONS_RUNTIME_TOKEN", seen_env)
+        self.assertEqual(seen_env["AUDIT_TARGET"], "https://example.test/")
+        # empty code is a coverage gap, not a silent success
+        with self.assertRaises(ValueError):
+            collect_toolbox("https://example.test/", validate_params("toolbox", {"code": "   "}))
+
+    def test_toolbox_reports_nonzero_script_without_claiming_success(self):
+        def fake_run(argv, **kwargs):
+            return SimpleNamespace(returncode=2, stdout="", stderr="boom")
+        with patch("lib.collect.subprocess.run", side_effect=fake_run):
+            out = collect_toolbox("https://example.test/", validate_params("toolbox", {"code": "raise SystemExit(2)"}))
+        self.assertFalse(out["run"]["ok"])
+        self.assertEqual(out["run"]["returncode"], 2)
+        self.assertIn("boom", out["run"]["stderr"])
 
     def test_script_dispatch_injects_only_requested_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

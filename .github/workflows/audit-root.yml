@@ -1,0 +1,96 @@
+name: Audit
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'One authorized public HTTP(S) URL or host'
+        required: true
+        type: string
+      authorized:
+        description: 'I have permission to audit this target'
+        required: true
+        default: false
+        type: boolean
+
+# The root agent dispatches sub-agent roles as their own workflow runs. A push made with
+# the default GITHUB_TOKEN starts no run, so this job authenticates gh with a PAT instead.
+permissions:
+  contents: write
+
+concurrency:
+  group: deepaudit-root-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  root:
+    if: ${{ inputs.authorized }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Run the root orchestrator
+        id: root
+        env:
+          # The PAT is what lets root's dispatched roles actually start.
+          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set +e
+          python -m lib.run_root --target "${{ inputs.target }}"
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Commit the audit run
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          run_dir="audits/root-${{ github.run_id }}"
+          if [ -d "$run_dir" ]; then
+            git add -- "$run_dir"
+            git commit -m "audit: ${{ inputs.target }} (run ${{ github.run_id }})" || true
+            git push || true
+          fi
+
+      - name: Bundle the run
+        id: bundle
+        if: ${{ always() && hashFiles(format('audits/root-{0}/**', github.run_id)) != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: deepaudit-${{ github.run_id }}
+          path: audits/root-${{ github.run_id }}
+          retention-days: 7
+
+      - name: Run summary
+        if: ${{ always() }}
+        env:
+          TARGET: ${{ inputs.target }}
+          BUNDLE_URL: ${{ steps.bundle.outputs.artifact-url }}
+        run: |
+          {
+            echo "## DeepAudit"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Target | \`$TARGET\` |"
+            echo "| Run | \`root-${{ github.run_id }}\` |"
+            echo
+            if [ -n "$BUNDLE_URL" ]; then
+              echo "**[Download the report bundle (zip)]($BUNDLE_URL)** — open \`report.html\`."
+            else
+              echo "No bundle was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail when the audit did not complete
+        if: ${{ steps.root.outputs.code != '0' }}
+        run: exit 1

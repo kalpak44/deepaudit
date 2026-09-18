@@ -1,5 +1,0 @@
-{
-  "rule_id": "HTML_CSP_ABSENT",
-  "title": "No enforced CSP header was observed on this HTML response",
-  "classification": "configuration_observation"
-}

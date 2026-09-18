@@ -1,5 +1,0 @@
-{
-  "rule_id": "HTML_FRAME_GUARD_ABSENT",
-  "title": "No recognized frame restriction header was observed",
-  "classification": "configuration_observation"
-}

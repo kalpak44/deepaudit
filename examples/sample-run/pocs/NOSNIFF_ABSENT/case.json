@@ -1,5 +1,0 @@
-{
-  "rule_id": "NOSNIFF_ABSENT",
-  "title": "X-Content-Type-Options: nosniff was not observed",
-  "classification": "configuration_observation"
-}

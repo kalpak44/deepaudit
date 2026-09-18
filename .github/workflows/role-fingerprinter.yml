@@ -1,0 +1,72 @@
+name: role-fingerprinter
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: 'Correlation id from the root orchestrator'
+        required: true
+        type: string
+      target:
+        description: 'Authorized target'
+        required: true
+        type: string
+      params:
+        description: 'JSON parameter blob from root'
+        required: false
+        default: '{}'
+        type: string
+      run_name:
+        description: 'Unique run name root polls for'
+        required: false
+        default: ''
+        type: string
+
+# The run name carries the task_id so the orchestrator can find this run — `gh workflow
+# run` returns nothing to correlate on.
+run-name: ${{ inputs.run_name || format('deepaudit fingerprinter {0}', inputs.task_id) }}
+
+permissions:
+  contents: read
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      # The real tool. whatweb is the role's capability; the agent only interprets its
+      # output. Pinned to the single authorized target, aggression 3 (default, passive).
+      - name: Install whatweb
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq whatweb
+
+      - name: Fingerprint the target
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          # --no-errors keeps a single unreachable host from failing the step; the agent
+          # reports an empty result honestly if nothing came back.
+          whatweb --quiet --no-errors --aggression 3 --log-json=tool_output.json "$TARGET" || true
+          test -f tool_output.json || echo '[]' > tool_output.json
+
+      - name: Interpret the evidence
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
+        run: |
+          python -m lib.run_role fingerprinter \
+            --task-id "${{ inputs.task_id }}" \
+            --target "${{ inputs.target }}" \
+            --params "${{ inputs.params }}" \
+            --evidence tool_output.json \
+            --out result.json
+
+      - name: Return the result
+        uses: actions/upload-artifact@v7
+        with:
+          name: result-${{ inputs.task_id }}
+          path: result.json
+          retention-days: 7

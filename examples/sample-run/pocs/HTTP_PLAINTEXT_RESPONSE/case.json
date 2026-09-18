@@ -1,5 +1,0 @@
-{
-  "rule_id": "HTTP_PLAINTEXT_RESPONSE",
-  "title": "The selected HTTP endpoint serves a successful plaintext response",
-  "classification": "configuration_observation"
-}

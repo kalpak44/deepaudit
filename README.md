@@ -1,278 +1,104 @@
-# DeepAudit MVP
+# DeepAudit
 
-An autonomous CLI agent built on the DeepSeek API for **authorized HTTP/TLS checks against a single domain or IP**. The agent calls tools, collects observations, repeats its checks, and writes PoCs and documentation into the repository. Behind a separate flag it commits only the results of a completed run.
+An authorized web-audit system built as an **agent hierarchy running on GitHub Actions**. You
+dispatch one workflow with a target; a root agent decides which checks to run, launches each
+as its own parallel workflow, reads their results, and assembles a report. The repository is
+almost entirely **role prompts and workflows with real tools** — very little audit logic
+lives in code.
 
-This is a working, deliberately limited MVP — not a general-purpose Codex equivalent and not a generator of arbitrary exploits. A PoC here is a reproducible check of one specific configuration observation. A missing CSP is not by itself declared to be XSS; missing framing-protection headers are not declared to be proven clickjacking.
+This is deliberately not a monolithic scanner. Each capability is a role the root agent can
+choose to run, and each role is a battle-tested tool (whatweb, and more to come) wrapped in a
+workflow, interpreted by a small agent, and grounded by a deterministic check before anything
+it reports reaches the audit.
 
-A second pipeline, [`deps`](#dependency-audit-deps), audits the repository's own
-dependencies against known advisories and reports each match at the confidence its evidence
-actually supports. Both pipelines share one rule: a status is derived from evidence a reader
-can re-derive, never asserted.
-
-## Quick start without an API key
-
-Requires Python 3.11+. There are no runtime dependencies outside the standard library. From the root of the project:
-
-```bash
-python -m deepaudit demo
-```
-
-The command starts a local server on a random port on `127.0.0.1`, checks it, produces a report and five PoCs, runs them offline, and shuts the server down. A normal demo is expected to reproduce `5/5` observations. For a comparison run with protective headers in place:
-
-```bash
-python -m deepaudit demo --hardened
-```
-
-In that example one observation remains: the test server still serves over HTTP.
-
-A previously saved result is included in `examples/sample-run/`:
-
-```bash
-python -m deepaudit verify examples/sample-run
-python examples/sample-run/pocs/HTML_CSP_ABSENT/poc.py
-```
-
-Neither command touches the network or requires an API key. The stored run identifier reflects the original run; the directory was moved to `sample-run` without altering the evidence.
-
-To install the `deepaudit` command and use the live mode of individual PoCs from any directory:
-
-```bash
-python -m venv .venv
-# Linux/macOS:
-source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install -e .
-```
-
-Installing via pip may download build tooling. Running `python -m deepaudit` from the project root requires no installation.
-
-## Autonomous mode with DeepSeek
-
-Set the key through an environment variable; do not write it into source files or git:
-
-```bash
-export DEEPSEEK_API_KEY="YOUR_API_KEY"
-export DEEPSEEK_MODEL="deepseek-flash"
-
-python -m deepaudit work \
-  --target https://your-authorized-host.example/ \
-  --authorized \
-  --share-with-llm
-```
-
-Replace the example with a real address you have permission to check. `work` is a synonym for `run`: a single finite run from data collection through to the report, with no intermediate confirmations once the scope and the consents have been given explicitly. It is not a background daemon.
-
-`--authorized` records your confirmation that you have permission. `--share-with-llm` permits sending DeepSeek the target address, the pinned IPs, the normalized HTTP/TLS observations, and the rule conclusions. Response bodies, raw headers, cookie names and values, and the API key never reach the model's messages.
-
-The Chat Completions API is used, with tool calls. The value `deepseek-flash` was checked against the official documentation on 18 September 2026. The model is changed through `--model` or `DEEPSEEK_MODEL`. Verify the key and the availability of a particular model in your own account. No live, billable API call was made while preparing this project; the protocol and the tool loop were exercised against stubbed responses.
-
-The `.env.example` file is a template only: the application does not load `.env` automatically. Set the variables in your shell or in your CI secret store. Do not publish keys, and do not type a real key into commands that will end up in a shared log.
-
-## Domain, IP, and a local lab
-
-A bare domain or IP is interpreted as HTTPS. A port and a path can be given explicitly. For HTTP, write `http://`:
-
-```bash
-python -m deepaudit run \
-  --target http://127.0.0.1:8765/ \
-  --authorized --allow-private --mode baseline
-```
-
-For this example, first run `python -m deepaudit serve-demo --port 8765` in another terminal.
-
-`baseline` does not call the LLM, but it does make network requests to the given target. This is **not an offline mode**. What works offline is `verify` and PoCs run without `--live`.
-
-IPv6 with a port must be enclosed in square brackets: `https://[IPv6-address]:8443/`. For an IP, the certificate of that IP itself is checked; the virtual host of another domain is not substituted. URLs carrying credentials, a query string, a fragment, or control characters are rejected.
-
-## What happens inside
+## How it works
 
 ```text
-target + authorization + limits
-  -> scope check and IP pinning
-  -> DeepSeek selects tools
-  -> collection of normalized HTTP/TLS data
-  -> deterministic rules
-  -> fresh recheck
-  -> generation of fixed PoCs
-  -> independent offline predicates run in subprocesses
-  -> report + evidence + log + SHA256SUMS
-  -> optional local git commit
+you: dispatch Audit with a target
+        |
+        v
+root agent (audit-root.yml)  -- knows the roster of roles, decides what to run
+        |  gh workflow run role-<name>.yml  (authenticated with a PAT)
+        |--------------> role-fingerprinter.yml  - runs whatweb - interprets - result artifact
+        |--------------> role-<other>.yml         (dispatched in parallel)
+        |  <-----------  each role returns a typed result the root downloads
+        v
+root assembles a report -> deterministic provenance check -> report.html, committed + zipped
 ```
 
-The model has access to `get_scope`, `inspect_http`, `inspect_tls`, `analyze_evidence`, `verify_findings`, and `list_findings`. None of these tools take a parameter that would let the model change the target, run a shell command, or write an arbitrary file.
+- **Roles are folders.** `roles/<name>/role.md` is both the documentation and the agent's
+  system prompt. Its one-line summary is what the root agent sees in its roster; the whole
+  file is the prompt the role runs under. A role named `<name>` is run by
+  `.github/workflows/role-<name>.yml`.
+- **Root is the tech lead.** It never runs a tool itself. It calls `list_roles`, dispatches
+  the roles the evidence justifies (in parallel — each is a separate runner), reads their
+  typed results, and calls `finish` with a report.
+- **Parallelism is the workflow fan-out.** Each dispatched role is its own GitHub Actions
+  job, so independent checks run at the same time on separate runners.
 
-If the API is unavailable, a response is cut short, the model finishes too early, or a limit is exhausted, the coordinator completes the baseline checks itself. The report is marked incomplete/degraded, the process returns exit code 3, and no autocommit is performed. The model's text is stored separately from the evidence, in `AI_NOTES.txt`.
+## The safety line that survives being agent-driven
 
-## The eight MVP rules
+The model orchestrates and interprets; it does not get the last word on what is true.
 
-| Rule | What it records |
-| --- | --- |
-| `HTTP_PLAINTEXT_RESPONSE` | The selected HTTP endpoint returned a successful response rather than an HTTPS redirect |
-| `HTML_CSP_ABSENT` | No enforced CSP header is observed on a successful HTML response |
-| `HTML_FRAME_GUARD_ABSENT` | No recognized framing restriction is observed in the headers |
-| `NOSNIFF_ABSENT` | No `X-Content-Type-Options: nosniff` is observed |
-| `HTTPS_HSTS_ABSENT` | An HTTPS response for a domain name carries no HSTS header |
-| `COOKIE_FLAGS_REVIEW` | Attributes of some cookies warrant a contextual review; informational level |
-| `TLS_CERTIFICATE_REJECTED` | Python's trust store rejected the endpoint's certificate |
-| `TLS_CERTIFICATE_EXPIRING` | A verified certificate expires within 30 days |
+- **Root cannot conjure a finding.** Every finding it reports must carry the `task_id` of the
+  sub-agent that produced it. `lib/provenance.py` re-checks each one against that task's
+  stored result and drops any the model invented. This is deterministic, not a prompt.
+- **No shell for the model.** A role's tools are its entire capability. Root's only actions
+  are `list_roles`, `dispatch_role` (a known role, one target, a validated parameter blob),
+  and `finish`. A sub-agent's only action is `emit_result` over evidence its workflow already
+  collected. Neither can run arbitrary commands or reach an unapproved host.
+- **Results are untrusted data.** Tool output and sub-agent results may contain a target's own
+  markup; prompts say so, and every value is escaped before it reaches the report.
 
-The list is also available through `python -m deepaudit checks`. Confirmation means the observation is reproducible — not that exploitation or business impact has been proven. A failed request is not treated as a missing header.
+## Running it
 
-## Dependency audit (`deps`)
+Dispatch the **Audit** workflow (`workflow_dispatch`) with a `target` and the `authorized`
+checkbox. The job runs the root agent, commits the run under `audits/root-<id>/`, and links a
+zip of it from the run summary; open `report.html` from the zip.
 
-A second, independent pipeline: it inventories the repository's declared dependencies,
-looks up known advisories for them, and reports what the evidence actually supports. It
-makes no request to any audited endpoint and does not call the LLM.
+Required in the repository:
 
-```bash
-python -m deepaudit deps --repo . --allow-advisory-fetch
-```
+- Secret `DEEPSEEK_API_KEY` and variable `DEEPSEEK_MODEL` — every agent runs on DeepSeek
+  through the small client in `lib/deepseek.py` (no SDK, standard library only).
+- Secret `GH_ADMIN_TOKEN` (PAT, repo + workflow scope) — root dispatches roles with it,
+  because a workflow dispatched with the default `GITHUB_TOKEN` never starts a run.
 
-Without `--allow-advisory-fetch` no advisory database is consulted, and the run produces an
-inventory and a CycloneDX SBOM only. That run finds nothing by construction, exits 3, and
-says so in the report — zero findings there is not a clean result.
-
-The consent flag is separate from `--authorized` because the lookup is disclosure: it sends
-each dependency's ecosystem, name and resolved version to `api.osv.dev`. No source code,
-file contents, repository name or credentials are sent.
-
-### The evidence ladder
-
-Every match carries five rungs, each independently confirmed, refuted, or not evaluated:
+## Repository layout
 
 ```text
-VERSION_MATCH -> CONDITIONS_MATCH -> REACHABLE -> EXTERNALLY_REACHABLE -> REPRODUCED
+roles/
+  root/role.md            tech-lead system prompt: roster + orchestration policy
+  fingerprinter/role.md   interpret whatweb output into a typed stack + findings
+.github/workflows/
+  audit-root.yml          entrypoint: input target, runs the root agent
+  role-fingerprinter.yml  workflow_dispatch: task_id + target + params, runs whatweb
+templates/report.template.html   the editable report; lib/report.py fills it
+lib/
+  deepseek.py             standard-library DeepSeek client + bounded tool-use loop
+  roles.py                discover roles from the filesystem
+  orchestrator.py         root's dispatch tool (gh workflow run + wait + collect result)
+  run_root.py             root entrypoint
+  run_role.py             generic sub-agent entrypoint (interpret a tool's evidence)
+  provenance.py           the deterministic gate: findings must trace to a task result
+  report.py               fill the report template
 ```
 
-and the status is derived from them, never asserted:
+## Adding a role
 
-| Status | Meaning |
-| --- | --- |
-| `POTENTIAL` | The resolved version falls in an affected range; nothing further was established |
-| `LIKELY_APPLICABLE` | Exploitation conditions or reachability were positively established |
-| `CONFIRMED_APPLICABLE` | A PoC reproduced the issue and stopped reproducing after the fix |
-| `NOT_APPLICABLE` | A check positively ruled the advisory out for this component |
-| `INSUFFICIENT_EVIDENCE` | The available data could not decide; this is not a clean result |
+1. `roles/<name>/role.md` — the prompt. First non-heading line is the roster summary.
+2. `.github/workflows/role-<name>.yml` — install and run the role's real tool against the
+   dispatched target, write its output to a file, then
+   `python -m lib.run_role <name> --task-id ... --target ... --evidence <file> --out result.json`
+   and upload `result.json` as `result-<task_id>`.
 
-**This release evaluates `VERSION_MATCH` only.** Every higher rung reports *not evaluated*,
-which is a gap in the evidence and never a pass, so the strongest status it can currently
-produce is `POTENTIAL`. See `python -m deepaudit states`.
+Root discovers it automatically; no orchestration code changes.
 
-A match is re-derived locally from the advisory's own version ranges rather than taken on
-the database's word. Where the two disagree the result is `not evaluated`, not "not
-affected" — the matcher may be wrong, and silently clearing a real advisory is the costlier
-mistake. The same rule covers an unparseable version or an unevaluable range.
+## Status
 
-### What it reads, and what it therefore misses
-
-Versions come from committed manifests and lockfiles — `requirements*.txt`,
-`pyproject.toml`, `poetry.lock`, `uv.lock`, `package.json`, `package-lock.json` — not from
-an installed environment, so a deployed artifact can differ from what is assessed. No
-resolver is run: a dependency declaring a range keeps no version and is reported as a
-coverage gap rather than being resolved against a registry. Vendored and backported code is
-not detected, so a patched fork still matches its upstream advisory range.
-
-### Artifacts
-
-```text
-audits/<run-id>/
-  report.html
-  manifest.json
-  inventory.json
-  sbom.json              # CycloneDX 1.5
-  advisories.json
-  applicability.json
-  SHA256SUMS
-```
-
-`python -m deepaudit verify <run-id>` checks their integrity, exactly as for an endpoint
-run. Exit codes: `0` a complete assessment; `3` incomplete — no advisory source consulted,
-the lookup was cut short, or some dependency had no resolved version.
-
-## Results in the repository
-
-```text
-audits/<run-id>/
-  report.html
-  manifest.json
-  findings.json
-  verification.json
-  trace.jsonl
-  SHA256SUMS
-  AI_NOTES.txt                  # only when the model produced final text
-  evidence/
-    initial.json
-    recheck.json
-  pocs/<RULE_ID>/
-    poc.py
-    case.json
-    README.md
-```
-
-PoCs reproduce the stored observation without network access. For a fresh check against the original endpoint, once the package is installed:
-
-```bash
-python audits/<run-id>/pocs/<RULE_ID>/poc.py --live --authorized
-```
-
-An authorized private lab additionally needs `--allow-private`. Consent given in an older report is not inherited automatically. The local server from an ordinary `demo` has already been shut down, so its random port is not a persistent live target.
-
-`SHA256SUMS` verifies the integrity of the files and their inventory, but it is not a digital signature and does not prove the authenticity of the measurements.
-
-## Git and GitHub
-
-Once the repository is initialized and `git user.name` / `git user.email` are configured:
-
-```bash
-python -m deepaudit work \
-  --target https://your-authorized-host.example/ \
-  --authorized --share-with-llm --git-commit
-```
-
-A commit is permitted only for a completed run whose PoC check succeeded. Pre-staged files cause a refusal; unrelated unstaged changes are left untouched. The application does not run `git add .` and does not push. If Git fails, inspect `git status`: the application does not attempt to roll back your changes automatically.
-
-Instructions for creating a repository with `gh` and uploading the sources are in
-[docs/GITHUB.md](docs/GITHUB.md).
-
-Two workflows are included. `ci.yml` runs the tests on every push and pull request.
-`audit.yml` is the automated audit: it takes a target URL and your authorization, then runs
-the full agent pipeline, commits the verified run into `audits/`, pushes it, and links the
-report bundle from the run summary. It asks nothing else — the run always uses the agent and
-always shares target metadata with DeepSeek, because a workflow that has to be re-consented
-on every dispatch is not automation.
-
-The tool itself keeps both controls: `--mode baseline` still runs without the LLM, and
-`--share-with-llm` is still required for agent mode on the command line. Only the workflow
-form is fixed, and only because dispatching it is already a deliberate act.
-
-The bundle is a zip of the run directory. Open `report.html` from it in a browser; the audit
-report is HTML rather than Markdown so it reads correctly straight out of the artifact.
-
-**The committed run is as public as the repository.** A report carries the target name, its
-resolved IPs, the path audited and every observation — no response bodies or credential
-values, but enough to be worth withholding. In a public repository, pushing an audit of a
-host publishes its security posture.
-
-## Limits and exit codes
-
-The defaults: 8 model steps, 8 HTTP attempts against the API including retries, 1500 output tokens per request, 6 connections to the target, and a minimum of 0.25 seconds between their starts. A normal run uses 2 connections for HTTP or 4 for HTTPS. Repeated tool calls read from cache; the fresh recheck runs exactly once.
-
-The limits are changed through `--max-steps`, `--max-api-requests`, `--max-tokens`, `--max-connections`, `--timeout`, and `--min-interval`. Upper bounds are built in. Network timeouts are not an absolute deadline for the whole process. The request limit is not a substitute for a spending limit on your account.
-
-`run`/`work` codes: `0` — completed run; `2` — input, configuration, policy, or startup error; `3` — incomplete check, agent fallback, or observations that were not reproduced; `4` — Git error; `130` — interrupted. For `verify`: `0` — check succeeded, `1` — not all observations were reproduced, `2` — integrity or startup error. For an individual PoC: `0` — reproduced, `1` — not_reproduced, `2` — inconclusive/error.
-
-## Scope limits and how the project was checked
-
-One URL, one selected IP, with no redirects, port scanning, site crawling, authentication, HTML body analysis, business logic, browser, or execution of arbitrary code. Policies that are already present but weak may be missed. Even a GET can have a side effect in a badly built application: choose an endpoint that is genuinely read-only. Use only a trusted local repository; this is not a full OS sandbox.
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-The tests use local HTTP/HTTPS servers, temporary git repositories, and stubbed DeepSeek responses. A summary of an actual run is in [docs/TESTING.md](docs/TESTING.md). Test certificates are created in temporary directories and are not shipped.
-
-Further detail: [architecture](docs/ARCHITECTURE.md), [security boundaries](SECURITY.md), [adding checks](docs/EXTENDING.md), [roadmap](docs/ROADMAP.md).
-
-Primary sources: [DeepSeek API](https://api-docs.deepseek.com/), [tool calls](https://api-docs.deepseek.com/guides/tool_calls/), [OWASP HTTP Headers](https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html).
+A working first slice: root plus one real-tool role (`fingerprinter`/whatweb) end to end,
+with the provenance gate and the report. The offline logic — the agent loop, dispatch
+mechanics, the gate, interpretation, rendering — is covered by tests in `lib/tests/`. The
+live cross-workflow run makes billable DeepSeek calls and needs the PAT, so the first real
+dispatch is left to the operator.
 
 License: MIT.

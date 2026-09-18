@@ -11,20 +11,13 @@ on:
         required: true
         default: false
         type: boolean
-      mode:
-        description: 'baseline does not call an LLM; agent uses DeepSeek'
-        required: true
-        default: baseline
-        type: choice
-        options: [baseline, agent]
-      share_with_llm:
-        description: 'Consent to send target metadata and normalized observations to DeepSeek'
-        default: false
-        type: boolean
 
+# The run is committed back to the repository, so this workflow writes where the rest of
+# the project reads. Nothing else here is granted.
 permissions:
-  contents: read
+  contents: write
 
+# Each run commits and pushes, so two of them would race on the same branch.
 concurrency:
   group: deepaudit-manual-${{ github.repository }}
   cancel-in-progress: false
@@ -33,38 +26,94 @@ jobs:
   audit:
     if: ${{ inputs.authorized }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
+        # Credentials are kept deliberately: the verified run is pushed back in this job.
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
+
+      # `--git-commit` refuses to run without an identity. This is automation, so it
+      # commits as the Actions bot rather than as any person.
+      - name: Configure the committer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Audit one explicitly approved target
+        id: audit
         env:
           AUDIT_TARGET: ${{ inputs.target }}
-          AUDIT_MODE: ${{ inputs.mode }}
-          SHARE_WITH_LLM: ${{ inputs.share_with_llm }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
         run: |
-          python - <<'PY'
-          import os
-          from deepaudit.cli import main
-          arguments = ['work', '--target', os.environ['AUDIT_TARGET'], '--authorized',
-                       '--mode', os.environ['AUDIT_MODE'], '--out', 'ci-audits']
-          if os.environ['SHARE_WITH_LLM'] == 'true':
-              arguments.append('--share-with-llm')
-          raise SystemExit(main(arguments))
-          PY
-      - name: Keep reports, including useful partial results
-        if: ${{ always() }}
+          set +e
+          python -m deepaudit work \
+            --target "$AUDIT_TARGET" \
+            --authorized \
+            --mode agent \
+            --share-with-llm \
+            --out audits \
+            --git-commit
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # Reported even on a degraded run: a partial report is the useful half of it.
+          run_dir=$(ls -dt audits/*/ 2>/dev/null | head -1 || true)
+          echo "run_dir=${run_dir%/}" >> "$GITHUB_OUTPUT"
+
+      # Only a completed run is committed by the tool, so only then is there a push to make.
+      - name: Publish the committed run
+        if: ${{ steps.audit.outputs.code == '0' }}
+        run: git push
+
+      - name: Bundle the run
+        id: bundle
+        if: ${{ always() && steps.audit.outputs.run_dir != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: deepaudit-${{ github.run_id }}
-          path: ci-audits/
+          path: ${{ steps.audit.outputs.run_dir }}
           if-no-files-found: ignore
           retention-days: 7
-# Deliberately no pull_request_target, schedule, push, or write permission here.
-# Treat workflow artifacts as confidential; use a private repository.
+
+      - name: Run summary
+        if: ${{ always() }}
+        env:
+          AUDIT_TARGET: ${{ inputs.target }}
+          CODE: ${{ steps.audit.outputs.code }}
+          RUN_DIR: ${{ steps.audit.outputs.run_dir }}
+          BUNDLE_URL: ${{ steps.bundle.outputs.artifact-url }}
+        run: |
+          case "$CODE" in
+            0) verdict="completed and committed" ;;
+            3) verdict="incomplete: partial coverage, agent fallback, or an unreproduced observation" ;;
+            "") verdict="did not run" ;;
+            *) verdict="failed with exit code $CODE" ;;
+          esac
+          {
+            echo "## DeepAudit"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Target | \`$AUDIT_TARGET\` |"
+            echo "| Result | $verdict |"
+            echo "| Run | \`${RUN_DIR:-none}\` |"
+            echo
+            if [ -n "$BUNDLE_URL" ]; then
+              echo "**[Download the report bundle (zip)]($BUNDLE_URL)**"
+              echo
+              echo "Unpack it and open \`report.html\` in a browser. \`SHA256SUMS\` covers every"
+              echo "other file in the bundle; \`python -m deepaudit verify <dir>\` checks it."
+            else
+              echo "No bundle was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A degraded run still publishes its report; it must not also report success.
+      - name: Fail when the audit did not complete
+        if: ${{ steps.audit.outputs.code != '0' }}
+        run: |
+          echo "Audit exit code: ${{ steps.audit.outputs.code }}" >&2
+          exit 1

@@ -68,7 +68,7 @@ def run_pipeline(args: argparse.Namespace) -> tuple[Path, dict, int]:
             progress("[git] committed only this run: " + sha)
         else:
             progress("[git] not committed: incomplete coverage, agent fallback, or unreproduced observations")
-    print("Report: " + str(run_dir / "report.md"))
+    print("Report: " + str(run_dir / "report.html"))
     print("Observations: " + str(manifest["findings_count"]))
     print("Offline PoC replay: " + str(manifest["offline_verification"]["reproduced"]) +
           "/" + str(manifest["offline_verification"]["total"]))

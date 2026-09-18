@@ -176,7 +176,7 @@ not detected, so a patched fork still matches its upstream advisory range.
 
 ```text
 audits/<run-id>/
-  report.md
+  report.html
   manifest.json
   inventory.json
   sbom.json              # CycloneDX 1.5
@@ -193,7 +193,7 @@ the lookup was cut short, or some dependency had no resolved version.
 
 ```text
 audits/<run-id>/
-  report.md
+  report.html
   manifest.json
   findings.json
   verification.json
@@ -231,7 +231,27 @@ python -m deepaudit work \
 
 A commit is permitted only for a completed run whose PoC check succeeded. Pre-staged files cause a refusal; unrelated unstaged changes are left untouched. The application does not run `git add .` and does not push. If Git fails, inspect `git status`: the application does not attempt to roll back your changes automatically.
 
-Instructions for creating a private repository with `gh`, uploading the sources, and running the workflows are in [docs/GITHUB.md](docs/GITHUB.md). CI tests and a manual audit workflow with separate checkboxes for authorization and for sending data to the LLM are included.
+Instructions for creating a repository with `gh` and uploading the sources are in
+[docs/GITHUB.md](docs/GITHUB.md).
+
+Two workflows are included. `ci.yml` runs the tests on every push and pull request.
+`audit.yml` is the automated audit: it takes a target URL and your authorization, then runs
+the full agent pipeline, commits the verified run into `audits/`, pushes it, and links the
+report bundle from the run summary. It asks nothing else — the run always uses the agent and
+always shares target metadata with DeepSeek, because a workflow that has to be re-consented
+on every dispatch is not automation.
+
+The tool itself keeps both controls: `--mode baseline` still runs without the LLM, and
+`--share-with-llm` is still required for agent mode on the command line. Only the workflow
+form is fixed, and only because dispatching it is already a deliberate act.
+
+The bundle is a zip of the run directory. Open `report.html` from it in a browser; the audit
+report is HTML rather than Markdown so it reads correctly straight out of the artifact.
+
+**The committed run is as public as the repository.** A report carries the target name, its
+resolved IPs, the path audited and every observation — no response bodies or credential
+values, but enough to be worth withholding. In a public repository, pushing an audit of a
+host publishes its security posture.
 
 ## Limits and exit codes
 

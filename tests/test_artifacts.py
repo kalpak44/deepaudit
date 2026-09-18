@@ -33,7 +33,7 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(manifest["offline_verification"]["reproduced"], 5)
             self.assertTrue(check_integrity(folder)["ok"])
             self.assertTrue(run_verifiers(folder)["all_reproduced"])
-            self.assertTrue((folder / "report.md").exists())
+            self.assertTrue((folder / "report.html").exists())
 
     def test_changed_evidence_fails_hash_check(self):
         with tempfile.TemporaryDirectory() as tmp:

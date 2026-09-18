@@ -45,7 +45,7 @@ class OfflineRun(unittest.TestCase):
             run_dir, manifest, code = run_quietly(arguments(root))
             self.assertEqual(code, 3, "no advisory source consulted is not a complete audit")
             for name in ("inventory.json", "sbom.json", "advisories.json",
-                         "applicability.json", "report.md", "manifest.json", "SHA256SUMS"):
+                         "applicability.json", "report.html", "manifest.json", "SHA256SUMS"):
                 self.assertTrue((run_dir / name).is_file(), name)
             self.assertFalse(manifest["advisory_consulted"])
             self.assertFalse(manifest["complete"])
@@ -55,9 +55,10 @@ class OfflineRun(unittest.TestCase):
             root = Path(tmp)
             fixture(root)
             run_dir, _, _ = run_quietly(arguments(root))
-            report = (run_dir / "report.md").read_text()
+            report = (run_dir / "report.html").read_text()
             self.assertIn("No advisory source was consulted", report)
             self.assertIn("not a clean result", report)
+            self.assertIn("<!doctype html>", report)
 
     def test_artifacts_are_self_verifying(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,7 +72,7 @@ class OfflineRun(unittest.TestCase):
             root = Path(tmp)
             fixture(root)
             run_dir, _, _ = run_quietly(arguments(root))
-            (run_dir / "report.md").write_text("rewritten")
+            (run_dir / "report.html").write_text("rewritten")
             self.assertFalse(check_integrity(run_dir)["ok"])
 
 
@@ -95,7 +96,7 @@ class AssessedRun(unittest.TestCase):
             assessment = json.loads((run_dir / "applicability.json").read_text())
             self.assertEqual(assessment["counts"]["POTENTIAL"], 1)
             self.assertEqual(assessment["findings"][0]["advisory_id"], "GHSA-x")
-            report = (run_dir / "report.md").read_text()
+            report = (run_dir / "report.html").read_text()
             self.assertIn("GHSA-x", report)
             self.assertIn("CVE-2026-9", report)
             self.assertIn("VERSION_MATCH", report)
@@ -111,14 +112,14 @@ class AssessedRun(unittest.TestCase):
             assessment = json.loads((run_dir / "applicability.json").read_text())
             names = {item["name"] for item in assessment["unresolved_components"]}
             self.assertIn("requests", names)
-            self.assertIn("Coverage gaps", (run_dir / "report.md").read_text())
+            self.assertIn("Coverage gaps", (run_dir / "report.html").read_text())
 
     def test_data_sharing_is_disclosed_in_the_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixture(root)
             run_dir, _, _ = self._run(root)
-            self.assertIn("Data sharing", (run_dir / "report.md").read_text())
+            self.assertIn("Data sharing", (run_dir / "report.html").read_text())
 
 
 class Sbom(unittest.TestCase):

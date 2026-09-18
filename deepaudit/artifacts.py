@@ -15,6 +15,8 @@ from . import __version__
 from .policy import PolicyError, Target
 from .rules import RULES
 from .tools import AuditTools
+from .htmlreport import (bullets, code_block, document, esc, heading, links, para,
+                         table, tag)
 from .transport import utc_now
 
 
@@ -85,6 +87,71 @@ def run_verifiers(run_dir: Path) -> dict:
             "reproduced": sum(item["status"] == "reproduced" for item in outcomes),
             "total": len(outcomes),
             "all_reproduced": all(item["status"] == "reproduced" for item in outcomes)}
+
+
+
+def _report_html(run_dir: Path, tools: AuditTools, agent: dict, verification: dict) -> str:
+    coverage = tools.coverage()
+    parts = [heading(2, "Summary"), table(
+        ["Measure", "Value"],
+        [["Configuration observations", esc(len(tools.findings))],
+         ["Independent offline replay",
+          esc(f"{verification['reproduced']}/{verification['total']} reproduced")],
+         ["Target connections",
+          esc(f"{tools.probes.budget.used}/{tools.probes.budget.maximum}")],
+         ["Agent status", tag(agent["status"])],
+         ["Deterministic fallback", esc(agent.get("fallback_used", False))],
+         ["Probe coverage complete", esc(coverage["complete"])]])]
+    parts.append(para(
+        "Reproduced observations are not proof of exploitable vulnerabilities. Missing "
+        "headers are hardening observations, not proof of XSS, clickjacking, or compromise.",
+        "note"))
+
+    parts.append(heading(2, "Evidence and coverage"))
+    parts.append(para(
+        "Both normalized snapshots are in evidence/. trace.jsonl records tool execution "
+        "without model reasoning, raw response content, or credentials. verification.json "
+        "contains actual subprocess replay outcomes. AI_NOTES.txt, when present, is "
+        "unverified model commentary."))
+    parts.append(para(coverage["scope_note"]))
+    if coverage["unavailable"]:
+        parts.append(para("Unavailable probes: " + ", ".join(coverage["unavailable"])))
+    if agent.get("error"):
+        parts.append(para("Agent warning: " + agent["error"], "note"))
+
+    parts.append(heading(2, "Observations"))
+    if not tools.findings:
+        parts.append(para("No built-in rules matched. This is not a clean bill of security.",
+                          "note"))
+    for finding in tools.findings:
+        parts.append(heading(3, f"{finding['id']}: {finding['title']}"))
+        parts.append('<p>Severity: ' + tag(finding["severity"]) + " &middot; Recheck: "
+                     + tag(finding["verification"]) + "</p>")
+        parts.append(para(finding["interpretation"]))
+        parts.append(code_block(finding["evidence"]))
+        parts.append(para("Remediation: " + finding["remediation"]))
+        parts.append("<p>Replay: <code>python pocs/" + esc(finding["id"])
+                     + "/poc.py</code></p>")
+        parts.append(links([finding["reference"]]))
+
+    parts.append(heading(2, "Limitations"))
+    parts.append(bullets([esc(item) for item in [
+        "Only the selected URL and first approved DNS address were sampled twice.",
+        "GET must be safe on the endpoint you authorize; side effects cannot be determined.",
+        "No browser, login, body analysis, crawling, port scan, exploitation, subdomain "
+        "expansion, HSTS preload lookup, meta-CSP analysis, or cipher enumeration.",
+        "No redirect is followed, including same-origin redirects.",
+        "A JSON/API response does not receive HTML-only findings.",
+        "Cookie purpose and sensitivity are unknown.",
+        "Policies that are present but malformed or permissive can be missed.",
+        "Private CA validation depends on the Python runtime trust store.",
+        "Repeated evidence does not establish business impact."]], plain=True))
+    parts.append(para(
+        "Review reports before sharing. Target names, selected IPs, paths and security "
+        "observations can be confidential even though bodies and credential values are "
+        "not collected.", "note"))
+    return document("DeepAudit report",
+                    f"{tools.probes.scope.target.url} \u00b7 run {run_dir.name}", parts)
 
 
 def write_artifacts(run_dir: Path, tools: AuditTools, agent: dict, started_at: str) -> dict:
@@ -159,50 +226,7 @@ Reference: {finding['reference']}
     if agent.get("summary"):
         _write(run_dir / "AI_NOTES.txt", "UNVERIFIED MODEL COMMENTARY. Not evidence; never executed.\n\n" +
                agent["summary"] + "\n")
-    lines = [
-        "# DeepAudit report", "", f"Target: `{tools.probes.scope.target.url}`", "",
-        f"Run: `{run_dir.name}`", "",
-        "## Summary", "",
-        f"- Configuration observations: **{len(tools.findings)}**.",
-        f"- Independent offline replay: **{verification['reproduced']}/{verification['total']} reproduced**.",
-        f"- Target connections: **{tools.probes.budget.used}/{tools.probes.budget.maximum}**.",
-        f"- Agent status: **{agent['status']}**; deterministic fallback: **{agent.get('fallback_used', False)}**.",
-        f"- Probe coverage complete: **{tools.coverage()['complete']}**.", "",
-        "Reproduced observations are not proof of exploitable vulnerabilities. Missing headers are",
-        "hardening observations, not proof of XSS, clickjacking, or compromise.", "",
-        "## Evidence and coverage", "",
-        "Both normalized snapshots are in `evidence/`. `trace.jsonl` records tool execution without",
-        "model reasoning, raw response content, or credentials. `verification.json` contains actual",
-        "subprocess replay outcomes. `AI_NOTES.txt`, when present, is unverified model commentary.", "",
-        tools.coverage()["scope_note"], "",
-    ]
-    if tools.coverage()["unavailable"]:
-        lines += ["Unavailable probes: " + ", ".join(tools.coverage()["unavailable"]), ""]
-    if agent.get("error"):
-        lines += ["Agent warning: " + agent["error"], ""]
-    lines += ["## Observations", ""]
-    if not tools.findings:
-        lines += ["No built-in rules matched. This is not a clean bill of security.", ""]
-    for finding in tools.findings:
-        lines += [f"### {finding['id']}: {finding['title']}", "",
-                  f"Severity: **{finding['severity']}**. Recheck: **{finding['verification']}**.", "",
-                  finding["interpretation"], "", "Evidence:", "", "```json",
-                  json.dumps(finding["evidence"], indent=2), "```", "",
-                  "Remediation: " + finding["remediation"], "",
-                  f"Replay: `python pocs/{finding['id']}/poc.py`", "",
-                  "Reference: " + finding["reference"], ""]
-    lines += ["## Limitations", "",
-              "Only the selected URL and first approved DNS address were sampled twice. GET must be",
-              "safe on the endpoint you authorize; the tool cannot determine application side effects.",
-              "No browser, login, body analysis, crawling, port scan, exploitation, subdomain expansion,",
-              "HSTS preload lookup, meta-CSP analysis, or TLS cipher/version enumeration is performed.",
-              "No redirect is followed, including same-origin redirects. A JSON/API response does not",
-              "receive HTML-only findings. Cookie purpose and sensitivity are unknown. Policies that",
-              "are present but malformed or permissive can be missed. Private CA validation depends",
-              "on the Python runtime trust store. Repeated evidence does not establish business impact.", "",
-              "Review reports before sharing. Target names, selected IPs, paths and security observations",
-              "can be confidential even though bodies and credential values are not collected.", ""]
-    _write(run_dir / "report.md", "\n".join(lines))
+    _write(run_dir / "report.html", _report_html(run_dir, tools, agent, verification))
     hashes = []
     for path in sorted(run_dir.rglob("*")):
         if path.is_file():

@@ -37,18 +37,28 @@ Review the commit, then publish with your normal Git workflow.
 
 ## Included workflows
 
-`Tests` runs standard-library tests and a saved evidence replay on Python 3.11, 3.12 and 3.13.
-It does not use an API key, scan a public host, or run on `pull_request_target`.
+`Tests` runs standard-library tests and a saved evidence replay on Python 3.11, 3.12, 3.13
+and 3.14. It does not use an API key, scan a public host, or run on `pull_request_target`.
 
-`Authorized audit` runs only via `workflow_dispatch`. Supply one public target and confirm
-authorization. Baseline mode needs no secret. Agent mode additionally requires the repository
-secret `DEEPSEEK_API_KEY` and the data-sharing checkbox. Inputs reach Python via environment
-variables, not shell interpolation. Artifacts are retained for seven days. The workflow has
-read-only repository permissions and never pushes commits. Scheduled audits are not enabled.
+`Authorized audit` runs only via `workflow_dispatch` and takes two inputs: one public target
+and your confirmation of authorization. Everything else is fixed — it always runs the agent
+and always shares target metadata with DeepSeek, so it requires the repository secret
+`DEEPSEEK_API_KEY`. Re-consenting on every dispatch is what it exists to avoid; the CLI still
+exposes `--mode baseline` and `--share-with-llm` for the cases that need them.
 
-Use a private repository and trusted workflow authors. An external audit target may be
-unreachable from GitHub-hosted runners. For a private lab, run the CLI locally; the provided
-GitHub workflow intentionally does not expose `--allow-private`.
+A completed run is committed into `audits/` and pushed, so the workflow holds
+`contents: write` and keeps its checkout credentials. A degraded run is not committed, and
+the job fails while still publishing what it produced. The run directory is also uploaded as
+a zip and linked from the run summary; open `report.html` from it. Inputs reach Python
+through environment variables, not shell interpolation. Artifacts are retained for seven
+days. Scheduled audits are not enabled.
+
+**Committing an audit publishes it.** In a public repository, the pushed run exposes the
+target name, its resolved IPs, the audited path and every observation. Use a private
+repository unless you intend that.
+
+An external audit target may be unreachable from GitHub-hosted runners. For a private lab,
+run the CLI locally; the workflow intentionally does not expose `--allow-private`.
 
 The workflow files were authored against the official Actions documentation checked on
 2026-09-18, using the documented v7 major tags. They have not been executed on your GitHub

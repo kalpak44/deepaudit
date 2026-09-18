@@ -74,4 +74,4 @@ class EndToEndTests(unittest.TestCase):
             run_dir = next((root / "audits").iterdir())
             manifest = json.loads((run_dir / "manifest.json").read_text())
             self.assertTrue(manifest["agent"]["fallback_used"])
-            self.assertTrue((run_dir / "report.md").exists())
+            self.assertTrue((run_dir / "report.html").exists())

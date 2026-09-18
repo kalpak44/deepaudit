@@ -27,6 +27,9 @@ FINDING = {"type": "object", "properties": {
     "task_id": STRING, "title": STRING, "summary": STRING, "remediation": STRING,
     "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
     "evidence_quote": {"type": "string", "description": "Exact 12..2000 character excerpt of the saved evidence text."},
+    "reproduction": {"type": "string", "description": "Optional evidence-grounded, non-destructive demonstration "
+                     "of how the target is affected: the observed condition, safe steps to reproduce it, and the "
+                     "concrete impact. Never fabricated or exploitative; it must rest on the cited evidence."},
 }, "required": ["task_id", "title", "summary", "severity", "evidence_quote", "remediation"]}
 
 COMMON = """You work in a separate session in one Python audit flow. Only your concise
@@ -113,10 +116,16 @@ class Audit:
                 raise ValueError("evidence_quote must be an exact 12..2000 character excerpt; use read_evidence")
             if entry["severity"] not in ("info", "low", "medium", "high", "critical"):
                 raise ValueError("Invalid severity")
-            valid.append({"task_id": entry["task_id"], "title": entry["title"][:200],
-                          "summary": entry["summary"][:1500], "severity": entry["severity"],
-                          "remediation": entry["remediation"][:1500],
-                          "evidence": {"quote": quote}, "verification": "unreviewed"})
+            reproduction = entry.get("reproduction")
+            if reproduction is not None and not isinstance(reproduction, str):
+                raise ValueError("reproduction must be a string when provided")
+            record = {"task_id": entry["task_id"], "title": entry["title"][:200],
+                      "summary": entry["summary"][:1500], "severity": entry["severity"],
+                      "remediation": entry["remediation"][:1500],
+                      "evidence": {"quote": quote}, "verification": "unreviewed"}
+            if reproduction and reproduction.strip():
+                record["reproduction"] = reproduction[:2500]
+            valid.append(record)
         return valid
 
     def share(self, employee, args):

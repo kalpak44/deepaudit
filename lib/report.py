@@ -37,6 +37,9 @@ def _findings_html(findings: list[dict]) -> str:
                  + f" &middot; from task <code>{_esc(finding.get('task_id'))}</code></p>"]
         if finding.get("summary"):
             block.append(f"<p>{_esc(finding['summary'])}</p>")
+        if finding.get("reproduction"):
+            block.append('<p><strong>Reproduction &amp; impact:</strong></p>'
+                         f"<pre><code>{_esc(finding['reproduction'])}</code></pre>")
         if finding.get("remediation"):
             block.append(f"<p><strong>Remediation:</strong> {_esc(finding['remediation'])}</p>")
         if finding.get("verification"):

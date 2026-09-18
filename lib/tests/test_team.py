@@ -149,6 +149,29 @@ class TeamTests(unittest.TestCase):
         self.assertIn("Coverage", page)
         self.assertEqual(audit.findings[0]["evidence"]["quote"], quote)
 
+    def test_reproduction_demonstration_is_grounded_and_rendered(self):
+        runner = FakeRunner()
+        runner.run("poc", "https://example.test", "script", {})
+        audit = self.audit(Scripted([]), runner)
+        finding = {"task_id": "t1", "title": "Reflected CORS", "severity": "medium",
+                   "summary": "Origin was reflected", "remediation": "Restrict allowed origins",
+                   "evidence_quote": '"observation": "Unique evidence for poc"',
+                   "reproduction": "Send Origin: https://evil.test; response reflects it with credentials allowed."}
+        self.assertIn("accepted", audit.record_findings("poc", [finding]))
+        stored = audit.findings[0]
+        self.assertEqual(stored["reproduction"][:4], "Send")
+        audit.save()  # writes tasks/t1.json so provenance can reconstruct the finding
+        prov = provenance.check({"findings": [{"task_id": "t1", "id": stored["id"], "title": stored["title"]}]}, self.root)
+        self.assertEqual(prov["counts"]["grounded"], 1)
+        self.assertIn("reproduction", prov["grounded"][0])
+        page = report.render(target="https://example.test", run_id="t", plan=[],
+                             report={"findings": prov["grounded"]}, provenance=prov)
+        self.assertIn("Reproduction &amp; impact", page)
+        self.assertIn("response reflects it", page)
+        # a non-string reproduction is rejected, never coerced
+        bad = {**finding, "reproduction": {"steps": 1}}
+        self.assertIn("reproduction must be a string", audit.record_findings("poc", [bad])["error"])
+
     def test_evidence_cannot_be_invented_or_attributed_to_failed_run(self):
         runner = FakeRunner()
         runner.run("http", "https://example.test", "http", {})

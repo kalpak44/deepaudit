@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+.coverage
+htmlcov/
+# audits/ is intentionally not ignored: explicit --git-commit can publish verified reports.
+# Treat real target metadata as confidential; use a private repository.

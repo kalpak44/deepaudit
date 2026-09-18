@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "findings": [
+    {
+      "id": "HTTP_PLAINTEXT_RESPONSE",
+      "title": "The selected HTTP endpoint serves a successful plaintext response",
+      "severity": "low",
+      "probe": "http",
+      "interpretation": "This response was not an HTTPS redirect. It does not prove HTTPS is unavailable on another endpoint.",
+      "remediation": "For a public production endpoint, consider redirecting HTTP to HTTPS; review exceptions for local labs and health checks.",
+      "evidence": {
+        "status_code": 200
+      },
+      "classification": "configuration_observation",
+      "verification": "reproduced",
+      "reference": "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html"
+    },
+    {
+      "id": "HTML_CSP_ABSENT",
+      "title": "No enforced CSP header was observed on this HTML response",
+      "severity": "low",
+      "probe": "http",
+      "interpretation": "A hardening observation, not evidence of XSS. A meta-delivered CSP may exist; response bodies are not inspected.",
+      "remediation": "Design and test an application-specific Content-Security-Policy, initially in report-only mode where appropriate.",
+      "evidence": {
+        "html": true,
+        "csp_present": false
+      },
+      "classification": "configuration_observation",
+      "verification": "reproduced",
+      "reference": "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html"
+    },
+    {
+      "id": "HTML_FRAME_GUARD_ABSENT",
+      "title": "No recognized frame restriction header was observed",
+      "severity": "low",
+      "probe": "http",
+      "interpretation": "Neither a CSP frame-ancestors directive nor a recognized X-Frame-Options value was seen. No clickjacking impact was demonstrated.",
+      "remediation": "When embedding is not required, configure CSP frame-ancestors; otherwise explicitly allow the required embedding origins.",
+      "evidence": {
+        "frame_ancestors_present": false,
+        "xfo_restrictive": false
+      },
+      "classification": "configuration_observation",
+      "verification": "reproduced",
+      "reference": "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html"
+    },
+    {
+      "id": "NOSNIFF_ABSENT",
+      "title": "X-Content-Type-Options: nosniff was not observed",
+      "severity": "low",
+      "probe": "http",
+      "interpretation": "A missing hardening control on this successful response, not a demonstrated content-sniffing exploit.",
+      "remediation": "Serve the correct Content-Type and configure X-Content-Type-Options: nosniff.",
+      "evidence": {
+        "nosniff": false
+      },
+      "classification": "configuration_observation",
+      "verification": "reproduced",
+      "reference": "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html"
+    },
+    {
+      "id": "COOKIE_FLAGS_REVIEW",
+      "title": "Some response cookie attributes need a context-specific review",
+      "severity": "info",
+      "probe": "http",
+      "interpretation": "Cookie values, names, and purpose are unknown. JavaScript-readable cookies and default SameSite behavior can be intentional; no session compromise is claimed.",
+      "remediation": "For sensitive cookies, review Secure, HttpOnly, and SameSite against the application requirements.",
+      "evidence": {
+        "cookie_indexes": [
+          1
+        ]
+      },
+      "classification": "configuration_observation",
+      "verification": "reproduced",
+      "reference": "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html"
+    }
+  ]
+}

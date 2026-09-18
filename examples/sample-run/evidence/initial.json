@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "scope": {
+    "target": "http://127.0.0.1:38333/",
+    "pinned_addresses": [
+      "127.0.0.1"
+    ],
+    "selected_address": "127.0.0.1",
+    "allow_private": true,
+    "methods": [
+      "GET"
+    ],
+    "follow_redirects": false,
+    "authorized_by_operator": true
+  },
+  "http": {
+    "status": "ok",
+    "observed_at": "2026-09-18T07:15:31.284016+00:00",
+    "status_code": 200,
+    "signals": {
+      "html": true,
+      "csp_present": false,
+      "frame_ancestors_present": false,
+      "xfo_restrictive": false,
+      "nosniff": false,
+      "hsts_present": false,
+      "hsts_max_age": null,
+      "location_class": "absent",
+      "cookies": [
+        {
+          "index": 1,
+          "secure": false,
+          "httponly": false,
+          "samesite": "absent_or_invalid"
+        }
+      ],
+      "cookie_parse_errors": 0,
+      "cookie_headers_truncated": false,
+      "raw_headers_retained": false,
+      "body_retained": false
+    }
+  },
+  "tls": {
+    "status": "skipped",
+    "observed_at": "2026-09-18T07:15:31.284978+00:00",
+    "reason": "target_is_http"
+  }
+}

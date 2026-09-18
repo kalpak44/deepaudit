@@ -1,0 +1,70 @@
+name: Authorized audit
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'One authorized public HTTP(S) URL; no credentials or query string'
+        required: true
+        type: string
+      authorized:
+        description: 'I have permission to perform read-only checks on this target'
+        required: true
+        default: false
+        type: boolean
+      mode:
+        description: 'baseline does not call an LLM; agent uses DeepSeek'
+        required: true
+        default: baseline
+        type: choice
+        options: [baseline, agent]
+      share_with_llm:
+        description: 'Consent to send target metadata and normalized observations to DeepSeek'
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deepaudit-manual-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: ${{ inputs.authorized }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Audit one explicitly approved target
+        env:
+          AUDIT_TARGET: ${{ inputs.target }}
+          AUDIT_MODE: ${{ inputs.mode }}
+          SHARE_WITH_LLM: ${{ inputs.share_with_llm }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
+        run: |
+          python - <<'PY'
+          import os
+          from deepaudit.cli import main
+          arguments = ['work', '--target', os.environ['AUDIT_TARGET'], '--authorized',
+                       '--mode', os.environ['AUDIT_MODE'], '--out', 'ci-audits']
+          if os.environ['SHARE_WITH_LLM'] == 'true':
+              arguments.append('--share-with-llm')
+          raise SystemExit(main(arguments))
+          PY
+      - name: Keep reports, including useful partial results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: deepaudit-${{ github.run_id }}
+          path: ci-audits/
+          if-no-files-found: ignore
+          retention-days: 7
+# Deliberately no pull_request_target, schedule, push, or write permission here.
+# Treat workflow artifacts as confidential; use a private repository.

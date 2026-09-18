@@ -1,0 +1,5 @@
+{
+  "rule_id": "COOKIE_FLAGS_REVIEW",
+  "title": "Some response cookie attributes need a context-specific review",
+  "classification": "configuration_observation"
+}

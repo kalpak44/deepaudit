@@ -1,0 +1,20 @@
+{"at": "2026-09-18T12:20:42.637105+00:00", "kind": "run_started", "mode": "agent", "authorization_asserted": true, "data_sharing_approved": true}
+{"at": "2026-09-18T12:20:42.637192+00:00", "kind": "model_step", "step": 1}
+{"at": "2026-09-18T12:20:43.890046+00:00", "kind": "tool_start", "tool": "get_scope", "origin": "agent"}
+{"at": "2026-09-18T12:20:43.890076+00:00", "kind": "tool_end", "tool": "get_scope", "origin": "agent", "connections_used": 0}
+{"at": "2026-09-18T12:20:43.890107+00:00", "kind": "tool_start", "tool": "inspect_http", "origin": "agent"}
+{"at": "2026-09-18T12:20:44.020798+00:00", "kind": "tool_end", "tool": "inspect_http", "origin": "agent", "connections_used": 1}
+{"at": "2026-09-18T12:20:44.020997+00:00", "kind": "tool_start", "tool": "inspect_tls", "origin": "agent"}
+{"at": "2026-09-18T12:20:44.229698+00:00", "kind": "tool_end", "tool": "inspect_tls", "origin": "agent", "connections_used": 2}
+{"at": "2026-09-18T12:20:44.229743+00:00", "kind": "model_step", "step": 2}
+{"at": "2026-09-18T12:20:45.115862+00:00", "kind": "tool_start", "tool": "analyze_evidence", "origin": "agent"}
+{"at": "2026-09-18T12:20:45.116024+00:00", "kind": "tool_end", "tool": "analyze_evidence", "origin": "agent", "connections_used": 2}
+{"at": "2026-09-18T12:20:45.116058+00:00", "kind": "model_step", "step": 3}
+{"at": "2026-09-18T12:20:46.216563+00:00", "kind": "tool_start", "tool": "verify_findings", "origin": "agent"}
+{"at": "2026-09-18T12:20:46.521794+00:00", "kind": "tool_end", "tool": "verify_findings", "origin": "agent", "connections_used": 4}
+{"at": "2026-09-18T12:20:46.521843+00:00", "kind": "model_step", "step": 4}
+{"at": "2026-09-18T12:20:47.426345+00:00", "kind": "tool_start", "tool": "list_findings", "origin": "agent"}
+{"at": "2026-09-18T12:20:47.426568+00:00", "kind": "tool_end", "tool": "list_findings", "origin": "agent", "connections_used": 4}
+{"at": "2026-09-18T12:20:47.426604+00:00", "kind": "model_step", "step": 5}
+{"at": "2026-09-18T12:20:51.298469+00:00", "kind": "tool_start", "tool": "verify_findings", "origin": "coordinator"}
+{"at": "2026-09-18T12:20:51.298689+00:00", "kind": "tool_end", "tool": "verify_findings", "origin": "coordinator", "connections_used": 4}

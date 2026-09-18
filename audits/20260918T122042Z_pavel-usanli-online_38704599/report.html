@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>DeepAudit report</title>
+<style>
+:root { color-scheme: light dark;
+  --bg:#ffffff; --fg:#1b1f23; --muted:#5b6570; --line:#d8dee4; --card:#f6f8fa;
+  --high:#b42318; --mid:#b54708; --low:#175cd3; --ok:#067647; }
+@media (prefers-color-scheme: dark) { :root {
+  --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --line:#30363d; --card:#161b22;
+  --high:#ff7b72; --mid:#e3b341; --low:#79c0ff; --ok:#3fb950; } }
+* { box-sizing:border-box; }
+body { margin:0; padding:2rem 1.25rem 4rem; background:var(--bg); color:var(--fg);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+main { max-width:56rem; margin:0 auto; }
+h1 { font-size:1.75rem; margin:0 0 .25rem; }
+h2 { font-size:1.25rem; margin:2.5rem 0 .75rem; padding-bottom:.35rem;
+  border-bottom:1px solid var(--line); }
+h3 { font-size:1rem; margin:1.75rem 0 .5rem; }
+p, li { margin:.5rem 0; }
+code, pre { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.85em; }
+pre { background:var(--card); border:1px solid var(--line); border-radius:6px;
+  padding:.75rem 1rem; overflow-x:auto; }
+table { border-collapse:collapse; width:100%; margin:.75rem 0; display:block;
+  overflow-x:auto; }
+th, td { border:1px solid var(--line); padding:.45rem .6rem; text-align:left;
+  vertical-align:top; }
+th { background:var(--card); font-weight:600; }
+.sub { color:var(--muted); margin:0 0 1.5rem; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:6px;
+  padding:1rem 1.25rem; margin:1rem 0; }
+.tag { display:inline-block; padding:.1rem .5rem; border-radius:999px; font-size:.78rem;
+  font-weight:600; border:1px solid currentColor; }
+.t-high { color:var(--high); } .t-mid { color:var(--mid); }
+.t-low { color:var(--low); } .t-ok { color:var(--ok); } .t-muted { color:var(--muted); }
+.note { border-left:3px solid var(--mid); padding-left:1rem; color:var(--muted); }
+ul.plain { list-style:none; padding-left:0; }
+ul.plain li { border-bottom:1px solid var(--line); padding:.4rem 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>DeepAudit report</h1>
+<p class="sub">https://pavel-usanli.online/ · run 20260918T122042Z_pavel-usanli-online_38704599</p>
+<h2>Summary</h2>
+<table><thead><tr><th>Measure</th><th>Value</th></tr></thead><tbody><tr><td>Configuration observations</td><td>0</td></tr><tr><td>Independent offline replay</td><td>0/0 reproduced</td></tr><tr><td>Target connections</td><td>4/6</td></tr><tr><td>Agent status</td><td><span class="tag t-muted">complete</span></td></tr><tr><td>Deterministic fallback</td><td>False</td></tr><tr><td>Probe coverage complete</td><td>True</td></tr></tbody></table>
+<p class="note">Reproduced observations are not proof of exploitable vulnerabilities. Missing headers are hardening observations, not proof of XSS, clickjacking, or compromise.</p>
+<h2>Evidence and coverage</h2>
+<p>Both normalized snapshots are in evidence/. trace.jsonl records tool execution without model reasoning, raw response content, or credentials. verification.json contains actual subprocess replay outcomes. AI_NOTES.txt, when present, is unverified model commentary.</p>
+<p>One URL, one selected IP; no other pages, ports, virtual hosts, or TLS versions enumerated.</p>
+<h2>Observations</h2>
+<p class="note">No built-in rules matched. This is not a clean bill of security.</p>
+<h2>Limitations</h2>
+<ul class="plain"><li>Only the selected URL and first approved DNS address were sampled twice.</li><li>GET must be safe on the endpoint you authorize; side effects cannot be determined.</li><li>No browser, login, body analysis, crawling, port scan, exploitation, subdomain expansion, HSTS preload lookup, meta-CSP analysis, or cipher enumeration.</li><li>No redirect is followed, including same-origin redirects.</li><li>A JSON/API response does not receive HTML-only findings.</li><li>Cookie purpose and sensitivity are unknown.</li><li>Policies that are present but malformed or permissive can be missed.</li><li>Private CA validation depends on the Python runtime trust store.</li><li>Repeated evidence does not establish business impact.</li></ul>
+<p class="note">Review reports before sharing. Target names, selected IPs, paths and security observations can be confidential even though bodies and credential values are not collected.</p>
+</main>
+</body>
+</html>

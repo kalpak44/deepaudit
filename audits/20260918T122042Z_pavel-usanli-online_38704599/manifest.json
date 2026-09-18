@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "engine_version": "0.2.0",
+  "run_id": "20260918T122042Z_pavel-usanli-online_38704599",
+  "started_at": "2026-09-18T12:20:42.573554+00:00",
+  "finished_at": "2026-09-18T12:20:51.299411+00:00",
+  "scope": {
+    "target": "https://pavel-usanli.online/",
+    "pinned_addresses": [
+      "104.21.37.72",
+      "172.67.205.75",
+      "2606:4700:3031::ac43:cd4b",
+      "2606:4700:3037::6815:2548"
+    ],
+    "selected_address": "104.21.37.72",
+    "allow_private": false,
+    "methods": [
+      "GET"
+    ],
+    "follow_redirects": false,
+    "authorized_by_operator": true
+  },
+  "agent": {
+    "status": "complete",
+    "model": "deepseek-flash",
+    "error": null,
+    "api_requests": 5,
+    "usage": {
+      "prompt_tokens": 6633,
+      "completion_tokens": 844,
+      "total_tokens": 7477
+    },
+    "tool_calls": 6,
+    "fallback_used": false
+  },
+  "limits": {
+    "target_connections": 6,
+    "per_operation_timeout_seconds": 8,
+    "minimum_request_interval_seconds": 0.25
+  },
+  "target_connections_used": 4,
+  "coverage": {
+    "complete": true,
+    "unavailable": [],
+    "scope_note": "One URL, one selected IP; no other pages, ports, virtual hosts, or TLS versions enumerated."
+  },
+  "findings_count": 0,
+  "offline_verification": {
+    "verifier": "static independent predicates; no network",
+    "cases": [],
+    "reproduced": 0,
+    "total": 0,
+    "all_reproduced": true
+  },
+  "privacy": "No response bodies, raw headers, cookie values, credentials, or model reasoning are retained."
+}

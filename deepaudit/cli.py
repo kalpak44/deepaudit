@@ -11,7 +11,10 @@ from . import __version__
 from .agent import run_agent
 from .artifacts import check_integrity, make_run_dir, run_verifiers, write_artifacts
 from .demo import create_server, local_demo
+from .deps import run_deps
 from .gitops import GitError, commit_run, preflight
+from .advisories import AdvisoryError
+from .applicability import LADDER, STATUS_MEANING
 from .llm import APIError, DEFAULT_MODEL, DeepSeekClient
 from .policy import PolicyError, Scope, Target
 from .rules import RULES
@@ -109,7 +112,15 @@ def make_parser() -> argparse.ArgumentParser:
     serve = commands.add_parser("serve-demo", help="Serve a persistent loopback-only fixture until Ctrl+C")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--hardened", action="store_true")
+    deps = commands.add_parser("deps", help="Inventory dependencies and assess known advisories against them")
+    deps.add_argument("--repo", type=Path, default=Path.cwd(), help="Repository root to inventory (default: current directory)")
+    deps.add_argument("--out", default="audits", help="Relative artifact directory inside --repo (default: audits)")
+    deps.add_argument("--allow-advisory-fetch", action="store_true",
+                      help="Consent to send dependency names and versions to api.osv.dev; without it no advisory source is consulted")
+    deps.add_argument("--max-advisory-requests", type=int, default=128, help="Advisory API request budget")
+    deps.add_argument("--timeout", type=float, default=20, help="Advisory API per-operation timeout")
     commands.add_parser("checks", help="List the eight implemented observation rules")
+    commands.add_parser("states", help="List the evidence ladder and what each status means")
     return parser
 
 
@@ -132,6 +143,16 @@ def main(argv: list[str] | None = None) -> int:
             result = {"integrity": integrity, "replay": run_verifiers(directory)}
             print(json.dumps(result, indent=2 if args.json else None))
             return 0 if result["replay"]["all_reproduced"] else 1
+        if args.command == "deps":
+            return run_deps(args)[2]
+        if args.command == "states":
+            print("Evidence ladder (each rung is confirmed, refuted, or not evaluated):")
+            for name in LADDER:
+                print(f"  {name}")
+            print("\nStatuses:")
+            for name, meaning in STATUS_MEANING.items():
+                print(f"  {name:22} {meaning}")
+            return 0
         if args.command == "checks":
             for rule_id, spec in RULES.items():
                 print(f"{rule_id:30} {spec['severity']:6} {spec['title']}")
@@ -149,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     except GitError as exc:
         print("Git error: " + str(exc), file=sys.stderr)
         return 4
-    except (PolicyError, APIError, ValueError, OSError) as exc:
+    except (PolicyError, APIError, AdvisoryError, ValueError, OSError) as exc:
         print("Error: " + str(exc), file=sys.stderr)
         return 2
     except KeyboardInterrupt:

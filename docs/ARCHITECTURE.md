@@ -38,6 +38,48 @@ replays both snapshots in subprocesses. This does not establish exploitability o
 It completes the available pipeline without further prompts after the operator supplies the
 required scope/consent flags. There is no resume or arbitrary multi-repository editing in v0.1.
 
+## The dependency-applicability pipeline
+
+```text
+operator: repository path + optional advisory-fetch consent
+    |
+    v
+inventory.collect -> committed manifests and lockfiles only, no resolver, no network
+    |
+    +-> sbom.cyclonedx           components that carry a resolved version
+    |
+    v
+advisories.fetch (consent-gated)  OSV batch narrows, then one query per flagged component
+    |
+    v
+applicability.assess              evidence ladder, re-derived locally from the ranges
+    |
+    v
+inventory + sbom + advisories + applicability + report + SHA256SUMS
+```
+
+This pipeline shares the artifact layout, integrity manifest and `verify` command with the
+endpoint audit, and nothing else. It has no target, no IP pinning and no probe budget,
+because it makes no request to the subject of the audit.
+
+**The model has no role in it yet.** Every status is a version comparison a reader can
+repeat by hand, so there is nothing for a planner to decide. The rungs above
+`VERSION_MATCH` are where a model earns its place, and they arrive with those releases.
+
+## The evidence ladder
+
+`VERSION_MATCH -> CONDITIONS_MATCH -> REACHABLE -> EXTERNALLY_REACHABLE -> REPRODUCED`
+
+Each rung is independently `confirmed`, `refuted`, or `not_evaluated`, and `status_for` is
+the only function that turns them into a status. The separation matters: `not_evaluated`
+must never collapse into "not applicable", because that collapse is how an unimplemented
+check becomes a false clean result. A release that has not implemented a rung reports it as
+not evaluated, in the artifact and in the report.
+
+Local range evaluation re-derives the advisory database's own claim rather than trusting
+it. A disagreement resolves to `not_evaluated`, not `refuted` — the matcher may be wrong,
+and clearing a real advisory on that basis is the costlier mistake.
+
 ## Module map
 
 | Module | Responsibility |
@@ -52,7 +94,13 @@ required scope/consent flags. There is no resume or arbitrary multi-repository e
 | `artifacts.py` | Fixed filesystem layout, subprocess verification, hashes, report |
 | `gitops.py` | Staging preflight, heuristic secret check, scoped local commit |
 | `demo.py` | Loopback-only HTTP fixture, intentionally incomplete hardening headers |
-| `cli.py` | Run/demo/verify commands, consent gates, exit statuses |
+| `cli.py` | Run/demo/verify/deps commands, consent gates, exit statuses |
+| `inventory.py` | Manifest and lockfile parsing, bounded repository scan, deduplication |
+| `versions.py` | PEP 440 and semver ordering, OSV range evaluation, None on unparseable |
+| `advisories.py` | OSV client, request budget, advisory normalization, partial results |
+| `applicability.py` | Evidence ladder, per-rung verdicts, the single status derivation |
+| `sbom.py` | CycloneDX export of components with a resolved version |
+| `deps.py` | Dependency pipeline, artifacts, report |
 
 ## Failure semantics
 

@@ -18,7 +18,13 @@ non-claims. A missing mitigation must not become an assertion that an exploit su
    as separate threat-model changes, not a reason to add a generic shell tool.
 
 The current rule list deliberately excludes CORS findings inferred from a wildcard alone,
-HTML-only findings on API responses, cookie impact assumptions, and version-to-CVE guesses.
+HTML-only findings on API responses, and cookie impact assumptions.
+
+Version-to-CVE matching was on that list and is no longer, because `deps` no longer guesses:
+a match is re-derived from the advisory's own ranges, and it yields `POTENTIAL`, which claims
+only that the installed version falls in an affected range. Earning anything stronger takes
+the rungs above `VERSION_MATCH`. Adding a rung means adding a deterministic verdict function
+and leaving every rung it cannot decide as `not_evaluated` — never defaulting it to refuted.
 Present-but-weak policies are mostly not analyzed. A browser or authenticated business-flow
 check would need additional reviewed machinery and is not part of this MVP.
 

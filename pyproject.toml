@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepaudit-mvp"
-version = "0.1.0"
+version = "0.2.0"
 description = "A scoped, tool-using DeepSeek audit agent with reproducible read-only checks"
 readme = "README.md"
 requires-python = ">=3.11"

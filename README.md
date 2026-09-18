@@ -4,6 +4,11 @@ An autonomous CLI agent built on the DeepSeek API for **authorized HTTP/TLS chec
 
 This is a working, deliberately limited MVP — not a general-purpose Codex equivalent and not a generator of arbitrary exploits. A PoC here is a reproducible check of one specific configuration observation. A missing CSP is not by itself declared to be XSS; missing framing-protection headers are not declared to be proven clickjacking.
 
+A second pipeline, [`deps`](#dependency-audit-deps), audits the repository's own
+dependencies against known advisories and reports each match at the confidence its evidence
+actually supports. Both pipelines share one rule: a status is derived from evidence a reader
+can re-derive, never asserted.
+
 ## Quick start without an API key
 
 Requires Python 3.11+. There are no runtime dependencies outside the standard library. From the root of the project:
@@ -113,6 +118,77 @@ If the API is unavailable, a response is cut short, the model finishes too early
 
 The list is also available through `python -m deepaudit checks`. Confirmation means the observation is reproducible — not that exploitation or business impact has been proven. A failed request is not treated as a missing header.
 
+## Dependency audit (`deps`)
+
+A second, independent pipeline: it inventories the repository's declared dependencies,
+looks up known advisories for them, and reports what the evidence actually supports. It
+makes no request to any audited endpoint and does not call the LLM.
+
+```bash
+python -m deepaudit deps --repo . --allow-advisory-fetch
+```
+
+Without `--allow-advisory-fetch` no advisory database is consulted, and the run produces an
+inventory and a CycloneDX SBOM only. That run finds nothing by construction, exits 3, and
+says so in the report — zero findings there is not a clean result.
+
+The consent flag is separate from `--authorized` because the lookup is disclosure: it sends
+each dependency's ecosystem, name and resolved version to `api.osv.dev`. No source code,
+file contents, repository name or credentials are sent.
+
+### The evidence ladder
+
+Every match carries five rungs, each independently confirmed, refuted, or not evaluated:
+
+```text
+VERSION_MATCH -> CONDITIONS_MATCH -> REACHABLE -> EXTERNALLY_REACHABLE -> REPRODUCED
+```
+
+and the status is derived from them, never asserted:
+
+| Status | Meaning |
+| --- | --- |
+| `POTENTIAL` | The resolved version falls in an affected range; nothing further was established |
+| `LIKELY_APPLICABLE` | Exploitation conditions or reachability were positively established |
+| `CONFIRMED_APPLICABLE` | A PoC reproduced the issue and stopped reproducing after the fix |
+| `NOT_APPLICABLE` | A check positively ruled the advisory out for this component |
+| `INSUFFICIENT_EVIDENCE` | The available data could not decide; this is not a clean result |
+
+**This release evaluates `VERSION_MATCH` only.** Every higher rung reports *not evaluated*,
+which is a gap in the evidence and never a pass, so the strongest status it can currently
+produce is `POTENTIAL`. See `python -m deepaudit states`.
+
+A match is re-derived locally from the advisory's own version ranges rather than taken on
+the database's word. Where the two disagree the result is `not evaluated`, not "not
+affected" — the matcher may be wrong, and silently clearing a real advisory is the costlier
+mistake. The same rule covers an unparseable version or an unevaluable range.
+
+### What it reads, and what it therefore misses
+
+Versions come from committed manifests and lockfiles — `requirements*.txt`,
+`pyproject.toml`, `poetry.lock`, `uv.lock`, `package.json`, `package-lock.json` — not from
+an installed environment, so a deployed artifact can differ from what is assessed. No
+resolver is run: a dependency declaring a range keeps no version and is reported as a
+coverage gap rather than being resolved against a registry. Vendored and backported code is
+not detected, so a patched fork still matches its upstream advisory range.
+
+### Artifacts
+
+```text
+audits/<run-id>/
+  report.md
+  manifest.json
+  inventory.json
+  sbom.json              # CycloneDX 1.5
+  advisories.json
+  applicability.json
+  SHA256SUMS
+```
+
+`python -m deepaudit verify <run-id>` checks their integrity, exactly as for an endpoint
+run. Exit codes: `0` a complete assessment; `3` incomplete — no advisory source consulted,
+the lookup was cut short, or some dependency had no resolved version.
+
 ## Results in the repository
 
 ```text
@@ -175,7 +251,7 @@ python -m unittest discover -s tests -v
 
 The tests use local HTTP/HTTPS servers, temporary git repositories, and stubbed DeepSeek responses. A summary of an actual run is in [docs/TESTING.md](docs/TESTING.md). Test certificates are created in temporary directories and are not shipped.
 
-Further detail: [architecture](docs/ARCHITECTURE.md), [security boundaries](SECURITY.md), [adding checks](docs/EXTENDING.md).
+Further detail: [architecture](docs/ARCHITECTURE.md), [security boundaries](SECURITY.md), [adding checks](docs/EXTENDING.md), [roadmap](docs/ROADMAP.md).
 
 Primary sources: [DeepSeek API](https://api-docs.deepseek.com/), [tool calls](https://api-docs.deepseek.com/guides/tool_calls/), [OWASP HTTP Headers](https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html).
 

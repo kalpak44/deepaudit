@@ -18,7 +18,7 @@ from .tools import AuditTools
 from .transport import utc_now
 
 
-def make_run_dir(repo: Path, output: str, target: Target) -> Path:
+def make_run_dir(repo: Path, output: str, target: Target | str) -> Path:
     repo = repo.resolve(strict=True)
     if not repo.is_dir():
         raise PolicyError("Repository path is not a directory")
@@ -34,7 +34,8 @@ def make_run_dir(repo: Path, output: str, target: Target) -> Path:
             raise PolicyError("Output directory symlinks are not allowed")
         parent.mkdir(mode=0o700, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    slug = re.sub(r"[^A-Za-z0-9_-]", "-", target.host)[:64]
+    name = target.host if isinstance(target, Target) else str(target)
+    slug = re.sub(r"[^A-Za-z0-9_-]", "-", name)[:64] or "run"
     destination = parent / f"{stamp}_{slug}_{uuid.uuid4().hex[:8]}"
     destination.mkdir(mode=0o700)
     return destination

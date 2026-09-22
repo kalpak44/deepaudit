@@ -126,6 +126,46 @@ class SupervisorImportAndVerify(unittest.TestCase):
         self.assertEqual(state.findings[0]["verification"], "needs_manual_review")
 
 
+class ConcurrentToolCalls(unittest.TestCase):
+    def test_batch_executes_all_in_order(self):
+        from lib.llm import agent_loop
+        seen = []
+        multi = {"role": "assistant", "tool_calls": [
+            {"id": "a1", "function": {"name": "add", "arguments": json.dumps({"x": 1})}},
+            {"id": "a2", "function": {"name": "add", "arguments": json.dumps({"x": 2})}},
+            {"id": "a3", "function": {"name": "add", "arguments": json.dumps({"x": 3})}}]}
+        done = {"role": "assistant", "tool_calls": [
+            {"id": "d", "function": {"name": "done", "arguments": "{}"}}]}
+        tools = {
+            "add": ({"description": "", "parameters": {"type": "object", "properties": {}}},
+                    lambda a: seen.append(a["x"]) or {"ok": a["x"]}),
+            "done": ({"description": "", "parameters": {"type": "object", "properties": {}}},
+                     lambda _: {"accepted": True}),
+        }
+        out = agent_loop(FakeClient([multi, done]), "s", "t", tools, terminal_tools=("done",))
+        self.assertEqual(out["stopped"], "done")
+        self.assertEqual(sorted(seen), [1, 2, 3])  # every batched call ran
+
+
+class AsyncDispatcher(unittest.TestCase):
+    def test_spawn_then_gather(self):
+        from lib.dispatch import Dispatcher
+        d = Dispatcher(repo="o/r", ref="main", target="https://example.com/",
+                       run_root=Path(tempfile.mkdtemp()), console=Console(), sleep=lambda _: None)
+
+        def fake_bg(task_id, task, focus):  # stand in for the gh dispatch/watch/collect
+            d.results[task_id] = {"status": "ok", "focus": focus, "findings": [],
+                                  "evidence": [], "notes": [f"did {focus}"]}
+            d.records[task_id]["status"] = "ok"
+        d._run_bg = fake_bg
+        a = d.spawn({"focus": "recon", "task": "enumerate"})
+        b = d.spawn({"focus": "tls", "task": "check tls"})
+        self.assertEqual(a["status"], "running")
+        result = d.gather({})
+        self.assertEqual(set(result["gathered"]), {a["task_id"], b["task_id"]})
+        self.assertEqual(result["gathered"][a["task_id"]]["status"], "ok")
+
+
 class Reporting(unittest.TestCase):
     def test_escapes_and_prioritizes(self):
         result = {

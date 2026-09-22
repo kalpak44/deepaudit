@@ -71,9 +71,12 @@ HOW YOU WORK
    fingerprinting so later work is targeted, not blind.
 2. ACT. Use `run` for direct work in your own runner (install tools, run them against the
    target). Use `cve_lookup` on every concrete version you fingerprint.
-3. SCALE WIDE. When independent chunks of work would run well in parallel (per subdomain, a
-   heavy nuclei sweep, a long fuzz), `dispatch_subtask` launches a worker on its own runner.
-   Give each a crisp, self-contained assignment. Do not fan out trivial work.
+3. SCALE WIDE (asynchronously). When independent chunks would run well in parallel (per
+   subdomain, a heavy nuclei sweep, a long fuzz), `spawn_subtask` launches a worker on its own
+   runner and returns immediately. Spawn a whole WAVE at once (issue several spawn_subtask calls
+   in one turn — they run concurrently), keep doing your own recon meanwhile, check
+   `subtasks_status`, and `gather_subtasks` to pull results in as they finish. Give each a crisp,
+   self-contained assignment; don't fan out trivial work or block waiting on one worker at a time.
 4. RECORD findings as you confirm them (`record_finding`), each grounded in an evidence_id and
    exact quote. Use `read_evidence` to quote precisely.
 5. VERIFY. Before finishing, `run_verifier` adversarially re-checks every finding to kill false

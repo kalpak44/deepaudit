@@ -24,6 +24,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 FAST = "fast"
@@ -127,9 +128,33 @@ class LLMClient:
 Handler = Callable[[dict], dict]
 
 
+def _execute_call(call, tools, log, index):
+    """Run one tool call and return the message to append. Never raises: failures become data."""
+    name = (call.get("function") or {}).get("name")
+    raw_args = (call.get("function") or {}).get("arguments") or "{}"
+    call_id = call.get("id") or f"call_{index}"
+    terminal_accepted = False
+    try:
+        args = json.loads(raw_args) if isinstance(raw_args, str) else {}
+        if not isinstance(args, dict):
+            raise ValueError("arguments must be a JSON object")
+        if name not in tools:
+            result = {"error": "unknown_tool", "allowed": sorted(tools)}
+        else:
+            log(f"[tool] {name} " + json.dumps(args, ensure_ascii=True)[:600])
+            result = tools[name][1](args)
+    except Exception as exc:  # a tool failure is data for the model, not a crash
+        result = {"error": "tool_failed", "detail": str(exc)[:600]}
+    log(f"[result] {name} " + json.dumps(result, ensure_ascii=True)[:1000])
+    if isinstance(result, dict) and result.get("accepted") is True:
+        terminal_accepted = True
+    return {"role": "tool", "tool_call_id": call_id,
+            "content": json.dumps(result, ensure_ascii=True)}, name, terminal_accepted
+
+
 def agent_loop(client, system_prompt, task, tools, *, tier=FAST, max_steps=16,
                log=lambda _: None, terminal_tools=(), require_terminal=False,
-               max_context_chars=320_000):
+               max_context_chars=320_000, max_parallel_tools=8):
     """Run one agent session to completion.
 
     `tools` maps a name to (json-schema, handler). The handler takes parsed arguments and
@@ -163,27 +188,22 @@ def agent_loop(client, system_prompt, task, tools, *, tier=FAST, max_steps=16,
                     "tool_calls": executed, "stopped": "final_message"}
         if not isinstance(calls, list) or len(calls) > 24:
             raise LLMError("Invalid or excessive tool call batch")
-        for call in calls:
-            executed += 1
-            name = (call.get("function") or {}).get("name")
-            raw_args = (call.get("function") or {}).get("arguments") or "{}"
-            call_id = call.get("id") or f"call_{executed}"
-            try:
-                args = json.loads(raw_args) if isinstance(raw_args, str) else {}
-                if not isinstance(args, dict):
-                    raise ValueError("arguments must be a JSON object")
-                if name not in tools:
-                    result = {"error": "unknown_tool", "allowed": sorted(tools)}
-                else:
-                    log(f"[tool] {name} " + json.dumps(args, ensure_ascii=True)[:600])
-                    result = tools[name][1](args)
-            except Exception as exc:  # a tool failure is data for the model, not a crash
-                result = {"error": "tool_failed", "detail": str(exc)[:600]}
-            log(f"[result] {name} " + json.dumps(result, ensure_ascii=True)[:1000])
-            messages.append({"role": "tool", "tool_call_id": call_id,
-                             "content": json.dumps(result, ensure_ascii=True)})
-            if name in terminal_tools and result.get("accepted") is True:
-                return {"content": "", "steps": step + 1, "tool_calls": executed, "stopped": name}
+        executed += len(calls)
+        # Independent tool calls in one turn (spawn/run/cve — all IO-bound) run concurrently.
+        # Results are appended in the model's original call order, as the API requires.
+        if len(calls) == 1:
+            outcomes = [_execute_call(calls[0], tools, log, executed)]
+        else:
+            with ThreadPoolExecutor(max_workers=min(len(calls), max_parallel_tools)) as pool:
+                outcomes = list(pool.map(
+                    lambda ic: _execute_call(ic[1], tools, log, ic[0]), enumerate(calls)))
+        terminal = None
+        for message_out, name, accepted in outcomes:
+            messages.append(message_out)
+            if name in terminal_tools and accepted:
+                terminal = name
+        if terminal is not None:
+            return {"content": "", "steps": step + 1, "tool_calls": executed, "stopped": terminal}
     return {"content": "", "steps": max_steps, "tool_calls": executed, "stopped": "step_limit"}
 
 

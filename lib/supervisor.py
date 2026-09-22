@@ -29,24 +29,42 @@ def run_audit(*, target, repo, ref, run_root, client, console,
     dispatcher = Dispatcher(repo=repo, ref=ref, target=target, run_root=run_root, console=console)
     captured: dict = {}
 
-    def dispatch_subtask(args: dict) -> dict:
+    gathered: set[str] = set()
+
+    def _ingest(gathered_map: dict) -> list[dict]:
+        out = []
+        for task_id, payload in gathered_map.items():
+            if task_id in gathered:
+                continue
+            gathered.add(task_id)
+            imported = (state.import_worker(payload, focus=payload.get("focus", "subtask"))
+                        if payload.get("status") == "ok" else 0)
+            out.append({"task_id": task_id, "focus": payload.get("focus"),
+                        "status": payload.get("status"), "summary": payload.get("summary"),
+                        "findings_imported": imported, "notes": payload.get("notes", []),
+                        "error": payload.get("error")})
+        return out
+
+    def spawn_subtask(args: dict) -> dict:
         if not enable_dispatch:
             return {"error": "fan-out disabled (no GH token / local run); do this work with `run` instead"}
-        result = dispatcher.dispatch(args)
-        if result.get("status") == "failed" or "error" in result:
-            return result
-        imported = state.import_worker(result, focus=result.get("focus", "subtask"))
-        return {"task_id": result["task_id"], "focus": result.get("focus"),
-                "run_url": result.get("run_url"), "summary": result.get("summary"),
-                "findings_imported": imported, "notes": result.get("notes", [])}
+        return dispatcher.spawn(args)
+
+    def gather_subtasks(args: dict) -> dict:
+        if not enable_dispatch:
+            return {"error": "fan-out disabled"}
+        return {"results": _ingest(dispatcher.gather(args)["gathered"])}
 
     def run_verifier(_args: dict) -> dict:
         return verify.run_verifier(state, client, log=lambda m: console.agent("verifier", m))
 
     def finish(args: dict) -> dict:
+        if enable_dispatch and dispatcher.pending():
+            _ingest(dispatcher.gather({})["gathered"])  # never lose a still-running worker
         unreviewed = [f["id"] for f in state.findings if f.get("verification") == "unreviewed"]
         if unreviewed:
-            return {"error": "run_verifier first: findings still unreviewed", "unreviewed": unreviewed}
+            return {"error": "run_verifier first: findings still unreviewed "
+                    "(some may have just arrived from workers)", "unreviewed": unreviewed}
         summary = args.get("summary")
         if not isinstance(summary, str) or not summary.strip():
             return {"error": "provide a prioritized summary"}
@@ -58,10 +76,17 @@ def run_audit(*, target, repo, ref, run_root, client, console,
     tools.update({
         "get_checklist": (schema("Re-read the systematic coverage checklist."),
             lambda _: {"checklist": prompts.CHECKLIST}),
-        "dispatch_subtask": (schema(
-            "Launch a worker on its own runner for an independent subtask (parallel scale-out). "
-            "Give a crisp, self-contained assignment. Its grounded findings are imported for you.",
-            {"focus": STRING, "task": STRING}, ("focus", "task")), dispatch_subtask),
+        "spawn_subtask": (schema(
+            "Launch a worker on its own runner for an independent subtask and return immediately "
+            "(non-blocking). Spawn several at once to scale wide, keep working, then collect them. "
+            "Give a crisp, self-contained assignment.",
+            {"focus": STRING, "task": STRING}, ("focus", "task")), spawn_subtask),
+        "subtasks_status": (schema("Check which spawned workers are running vs finished."),
+            lambda _: dispatcher.poll()),
+        "gather_subtasks": (schema(
+            "Collect finished workers (blocks until the named ones finish; omit task_ids for all). "
+            "Their grounded findings are imported into your findings.",
+            {"task_ids": {"type": "array", "items": STRING}}), gather_subtasks),
         "run_verifier": (schema("Adversarially review every recorded finding before finishing."),
             run_verifier),
         "finish": (schema("Finish with a prioritized report summary and honest coverage gaps. "
@@ -95,7 +120,7 @@ def run_audit(*, target, repo, ref, run_root, client, console,
         "findings": confirmed,
         "rejected": [f for f in state.findings if f.get("verification") == "rejected"],
         "notes": state.notes,
-        "workers": dispatcher.runs,
+        "workers": list(dispatcher.records.values()),
         "evidence_count": len(state.evidence.index()),
         "usage": getattr(client, "usage", {}),
         "agent": {"steps": outcome["steps"], "stopped": outcome["stopped"]},

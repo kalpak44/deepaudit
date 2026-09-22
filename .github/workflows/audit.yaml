@@ -1,4 +1,8 @@
-name: Audit # Python-supervised entrypoint
+name: DeepAudit
+run-name: ${{ inputs.run_name || format('deepaudit {0}', inputs.target) }}
+
+# One workflow, two modes. A human dispatches mode=supervisor with a target; the supervisor
+# autonomously dispatches this same workflow in mode=worker to scale subtasks out in parallel.
 
 on:
   workflow_dispatch:
@@ -8,10 +12,35 @@ on:
         required: true
         type: string
       authorized:
-        description: I have permission to audit this target
+        description: I am authorized to perform an active security assessment of this target
         required: true
         default: false
         type: boolean
+      mode:
+        description: supervisor (entrypoint) or worker (dispatched by the supervisor)
+        required: false
+        default: supervisor
+        type: string
+      task:
+        description: Worker subtask assignment (mode=worker only)
+        required: false
+        default: ''
+        type: string
+      focus:
+        description: Worker focus label (mode=worker only)
+        required: false
+        default: subtask
+        type: string
+      task_id:
+        description: Worker correlation id (mode=worker only)
+        required: false
+        default: ''
+        type: string
+      run_name:
+        description: Internal run-name for dispatch correlation
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -19,50 +48,67 @@ permissions:
 
 jobs:
   audit:
-    if: ${{ inputs.authorized }}
+    # A human run must tick authorized; supervisor-dispatched worker runs are pre-authorized.
+    if: ${{ inputs.mode == 'worker' || inputs.authorized }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
+    env:
+      TARGET: ${{ inputs.target }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.DEEPSEEK_API_KEY }}
+      LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+      LLM_MODEL_FAST: ${{ vars.LLM_MODEL_FAST }}
+      LLM_MODEL_STRONG: ${{ vars.LLM_MODEL_STRONG }}
+      PYTHONUNBUFFERED: '1'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-      - name: Run supervised audit flow
+          python-version: '3.12'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Node.js (for npm-based tools)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Supervisor audit
+        if: ${{ inputs.mode == 'supervisor' }}
         env:
-          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN || github.token }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
+          # PAT is what lets the supervisor dispatch worker runs; the default token cannot.
+          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          TARGET: ${{ inputs.target }}
-          PYTHONUNBUFFERED: '1'
-        run: python -m lib.run_audit --target "$TARGET"
-      - name: Upload report bundle
-        id: report
-        if: ${{ always() && hashFiles(format('audits/audit-{0}/**', github.run_id)) != '' }}
-        uses: actions/upload-artifact@v7
+        run: python -m lib.supervisor --target "$TARGET"
+
+      - name: Worker subtask
+        if: ${{ inputs.mode == 'worker' }}
+        env:
+          TASK: ${{ inputs.task }}
+          FOCUS: ${{ inputs.focus }}
+          TASK_ID: ${{ inputs.task_id }}
+        run: python -m lib.worker --target "$TARGET" --task-id "$TASK_ID"
+
+      - name: Upload worker result
+        if: ${{ inputs.mode == 'worker' && always() && hashFiles('worker.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-${{ inputs.task_id }}
+          path: worker.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload audit report
+        if: ${{ inputs.mode == 'supervisor' && always() && hashFiles(format('audits/audit-{0}/**', github.run_id)) != '' }}
+        uses: actions/upload-artifact@v4
         with:
           name: deepaudit-report-${{ github.run_id }}
           path: audits/audit-${{ github.run_id }}
-          if-no-files-found: error
-          retention-days: 7
-      - name: Publish audit summary
-        if: ${{ always() }}
-        env:
-          TARGET: ${{ inputs.target }}
-          REPORT_URL: ${{ steps.report.outputs.artifact-url }}
-        run: |
-          {
-            echo '## DeepAudit report'
-            echo
-            echo "Target: \`$TARGET\`"
-            echo
-            if [ -n "$REPORT_URL" ]; then
-              echo "[Download the report bundle (includes report.html)]($REPORT_URL)"
-            else
-              echo 'The audit did not produce a report bundle.'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          if-no-files-found: warn
+          retention-days: 14

@@ -16,6 +16,11 @@ on:
         required: true
         default: false
         type: boolean
+      notes:
+        description: Optional guidance for this scan (scope emphasis, subdomains, focus, constraints)
+        required: false
+        default: ''
+        type: string
       mode:
         description: supervisor (entrypoint) or worker (dispatched by the supervisor)
         required: false
@@ -100,6 +105,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_RUN_ID: ${{ github.run_id }}
+          NOTES: ${{ inputs.notes }}
         run: python -m lib.supervisor --target "$TARGET"
 
       - name: Worker subtask

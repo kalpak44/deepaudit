@@ -24,7 +24,7 @@ SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 
 def run_audit(*, target, repo, ref, run_root, client, console,
-              enable_dispatch=True, max_steps=60) -> dict:
+              enable_dispatch=True, max_steps=60, notes="") -> dict:
     state = AuditState(target, run_root, console)
     dispatcher = Dispatcher(repo=repo, ref=ref, target=target, run_root=run_root, console=console)
     captured: dict = {}
@@ -69,8 +69,13 @@ def run_audit(*, target, repo, ref, run_root, client, console,
             {"summary": STRING, "limitations": STRING}, ("summary",)), finish),
     })
 
-    task = (f"Audit this authorized target end to end: {target}\n\n"
-            "Plan from the checklist, recon and fingerprint first, then go deep. Look up CVEs on "
+    notes = str(notes or "").strip()[:4000]
+    operator = (f"\n\nOPERATOR NOTES for this run (authoritative guidance — honor within scope; "
+                f"propagate relevant constraints to any workers you dispatch):\n{notes}\n"
+                if notes else "")
+    task = (f"Audit this authorized target end to end: {target}"
+            + operator +
+            "\n\nPlan from the checklist, recon and fingerprint first, then go deep. Look up CVEs on "
             "every version you find. Fan out independent work to workers. Record grounded findings, "
             "run the verifier, then finish with a prioritized report.")
     outcome = agent_loop(client, prompts.SUPERVISOR, task, tools, tier=STRONG,
@@ -104,6 +109,7 @@ def main(argv=None) -> int:
     parser.add_argument("--ref", default=os.getenv("GITHUB_REF_NAME", "main"))
     parser.add_argument("--run-id", default=os.getenv("GITHUB_RUN_ID", "local"))
     parser.add_argument("--out-dir", default="audits")
+    parser.add_argument("--notes", default=os.getenv("NOTES", ""))
     args = parser.parse_args(argv)
     try:
         target = target_url(args.target)
@@ -113,14 +119,16 @@ def main(argv=None) -> int:
     run_root = Path(args.out_dir) / f"audit-{args.run_id}"
     run_root.mkdir(parents=True, exist_ok=True)
     console = Console(run_root / "events.jsonl")
-    console.event("AUDIT", "started", target=target, repo=args.repo)
+    console.event("AUDIT", "started", target=target, repo=args.repo,
+                  notes=(args.notes[:120] + "…") if len(args.notes) > 120 else args.notes)
     client = LLMClient()
     enable_dispatch = bool(args.repo) and bool(os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN"))
     if not enable_dispatch:
         console.event("AUDIT", "fan-out disabled (no repo/token); supervisor works in-runner only")
 
     result = run_audit(target=target, repo=args.repo, ref=args.ref, run_root=run_root,
-                       client=client, console=console, enable_dispatch=enable_dispatch)
+                       client=client, console=console, enable_dispatch=enable_dispatch,
+                       notes=args.notes)
 
     (run_root / "report.json").write_text(json.dumps(result, ensure_ascii=True, indent=2), encoding="utf-8")
     (run_root / "report.html").write_text(report_render.html_page(result), encoding="utf-8")

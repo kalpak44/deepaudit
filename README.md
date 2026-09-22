@@ -48,7 +48,9 @@ authorized to assess — see `SECURITY.md`.
 ## Running it
 
 Dispatch **DeepAudit** (`.github/workflows/audit.yaml`) with a `target` and the `authorized`
-checkbox. Configure:
+checkbox. The optional **`notes`** input is free-text guidance the supervisor treats as
+authoritative for the run — e.g. "enumerate and audit every subdomain", "focus on the API",
+or scope constraints — and propagates to the workers it dispatches. Configure:
 
 - Secret `LLM_API_KEY` (or `DEEPSEEK_API_KEY`); optional variables `LLM_BASE_URL`,
   `LLM_MODEL_FAST`, `LLM_MODEL_STRONG` (defaults target DeepSeek).

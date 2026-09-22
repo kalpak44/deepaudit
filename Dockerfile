@@ -5,10 +5,11 @@
 # on a weekly schedule (to refresh nuclei templates and advisory data) by build-image.yaml.
 FROM ubuntu:24.04
 
+# GOTOOLCHAIN=auto (the default) lets `go install` fetch a newer toolchain when a tool's
+# go directive requires one, so the arsenal keeps building as upstreams bump their Go floor.
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     GOPATH=/root/go \
-    GOTOOLCHAIN=local \
     LANG=C.UTF-8 \
     PATH=/usr/local/go/bin:/root/go/bin:/root/.local/bin:/usr/local/bin:/usr/bin:/bin
 
@@ -19,8 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/pip3 /usr/local/bin/pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Go toolchain (projectdiscovery tools need a recent Go).
-RUN curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | tar -C /usr/local -xz
+# Go toolchain (recent — several arsenal tools require Go >= 1.24; GOTOOLCHAIN=auto bumps further).
+RUN curl -fsSL https://go.dev/dl/go1.25.5.linux-amd64.tar.gz | tar -C /usr/local -xz
 
 # Node.js 20 (npm-based tools) and the GitHub CLI (the supervisor fans out worker runs with it).
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \

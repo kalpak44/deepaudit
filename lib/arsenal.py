@@ -98,6 +98,21 @@ TOOLS = {
 }
 
 
+# The base minimum pre-installed by the workflow before any agent starts, so the toolkit is
+# ready on PATH. Chosen for high reuse and slow installs (Go builds, template downloads) where
+# pre-installing pays off most. Agents still install anything else on demand.
+BASE = ["nmap", "whatweb", "wafw00f", "testssl", "httpx", "subfinder", "katana", "ffuf", "nuclei"]
+
+
+def base_install_script() -> str:
+    """A single bash script that installs the base toolkit. Idempotent enough to re-run."""
+    commands = install_commands(BASE)
+    header = "set +e\n"
+    if any("apt-get install" in c for c in commands):
+        header = "set +e\nsudo apt-get update -qq\n"
+    return header + "\n".join(commands) + "\n"
+
+
 def catalog_text() -> str:
     """A compact, model-facing listing grouped by category for the agent's system prompt."""
     order = ["recon", "fingerprint", "probe", "crawl", "content", "vuln",
@@ -127,3 +142,23 @@ def install_commands(names) -> list[str]:
 
 def known(names) -> list[str]:
     return [n for n in (names or []) if n in TOOLS]
+
+
+def _main(argv=None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(description="DeepAudit tool arsenal")
+    parser.add_argument("--print-base", action="store_true",
+                        help="Print the bash script that installs the base toolkit")
+    parser.add_argument("--list", action="store_true", help="Print the tool catalogue")
+    args = parser.parse_args(argv)
+    if args.print_base:
+        print(base_install_script())
+    elif args.list:
+        print(catalog_text())
+    else:
+        parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

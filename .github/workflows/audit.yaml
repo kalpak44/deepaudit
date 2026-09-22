@@ -77,6 +77,21 @@ jobs:
         with:
           node-version: '20'
 
+      # Cache the Go toolchain builds so pre-install is a restore, not a rebuild, on repeat runs.
+      - name: Cache Go tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/bin
+            ~/go/pkg/mod
+          key: deepaudit-gotools-${{ hashFiles('lib/arsenal.py') }}
+          restore-keys: deepaudit-gotools-
+
+      # Base toolkit ready on PATH before the agent starts; recipes live in lib/arsenal.py.
+      # Agents still install anything else on demand. Non-fatal: a missing tool is a coverage gap.
+      - name: Pre-install base toolkit
+        run: python -m lib.arsenal --print-base | bash
+
       - name: Supervisor audit
         if: ${{ inputs.mode == 'supervisor' }}
         env:

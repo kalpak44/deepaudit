@@ -104,13 +104,33 @@ TOOLS = {
 BASE = ["nmap", "whatweb", "wafw00f", "testssl", "httpx", "subfinder", "katana", "ffuf", "nuclei"]
 
 
+def _install_script(names) -> str:
+    """A bash script installing the named tools, idempotently (skip a tool already on PATH).
+
+    Each tool is guarded by its `bin`: if the binary is already resolvable (on PATH or at its
+    known path), its install commands are skipped. That makes the script cheap to re-run — on a
+    warm Go cache, on top of a prebuilt image, or when only some tools are missing.
+    """
+    picked = [(n, TOOLS[n]) for n in dict.fromkeys(names) if n in TOOLS]
+    lines = ["set +e"]
+    if any("apt-get install" in c for _, spec in picked for c in spec["install"]):
+        lines.append("sudo apt-get update -qq")
+    for name, spec in picked:
+        base = spec["bin"].rsplit("/", 1)[-1]
+        lines.append(f'if ! command -v {base} >/dev/null 2>&1 && [ ! -e "{spec["bin"]}" ]; then')
+        lines += ["  " + c for c in spec["install"]]
+        lines.append(f'fi  # {name}')
+    return "\n".join(lines) + "\n"
+
+
 def base_install_script() -> str:
-    """A single bash script that installs the base toolkit. Idempotent enough to re-run."""
-    commands = install_commands(BASE)
-    header = "set +e\n"
-    if any("apt-get install" in c for c in commands):
-        header = "set +e\nsudo apt-get update -qq\n"
-    return header + "\n".join(commands) + "\n"
+    """Install the base toolkit (idempotent)."""
+    return _install_script(BASE)
+
+
+def all_install_script() -> str:
+    """Install the entire arsenal (idempotent) — used to bake the Docker image."""
+    return _install_script(list(TOOLS))
 
 
 def catalog_text() -> str:
@@ -149,9 +169,13 @@ def _main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="DeepAudit tool arsenal")
     parser.add_argument("--print-base", action="store_true",
                         help="Print the bash script that installs the base toolkit")
+    parser.add_argument("--print-all", action="store_true",
+                        help="Print the bash script that installs the entire arsenal (for the image)")
     parser.add_argument("--list", action="store_true", help="Print the tool catalogue")
     args = parser.parse_args(argv)
-    if args.print_base:
+    if args.print_all:
+        print(all_install_script())
+    elif args.print_base:
         print(base_install_script())
     elif args.list:
         print(catalog_text())

@@ -50,6 +50,7 @@ on:
 permissions:
   contents: read
   actions: write
+  packages: read
 
 jobs:
   audit:
@@ -57,6 +58,13 @@ jobs:
     if: ${{ inputs.mode == 'worker' || inputs.authorized }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # Run inside the prebuilt arsenal image so the toolkit is ready with no runtime install.
+    # Build it first via the "Build audit image" workflow.
+    container:
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       TARGET: ${{ inputs.target }}
       LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.DEEPSEEK_API_KEY }}
@@ -65,37 +73,11 @@ jobs:
       LLM_MODEL_STRONG: ${{ vars.LLM_MODEL_STRONG }}
       PYTHONUNBUFFERED: '1'
     steps:
+      # Check out the current code so the agents run the latest lib/ even if the image is older.
+      # The arsenal itself comes from the image; only Python here, which needs no install.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-
-      - name: Node.js (for npm-based tools)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # Cache the Go toolchain builds so pre-install is a restore, not a rebuild, on repeat runs.
-      - name: Cache Go tools
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/bin
-            ~/go/pkg/mod
-          key: deepaudit-gotools-${{ hashFiles('lib/arsenal.py') }}
-          restore-keys: deepaudit-gotools-
-
-      # Base toolkit ready on PATH before the agent starts; recipes live in lib/arsenal.py.
-      # Agents still install anything else on demand. Non-fatal: a missing tool is a coverage gap.
-      - name: Pre-install base toolkit
-        run: python -m lib.arsenal --print-base | bash
 
       - name: Supervisor audit
         if: ${{ inputs.mode == 'supervisor' }}

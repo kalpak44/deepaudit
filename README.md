@@ -57,13 +57,22 @@ or scope constraints — and propagates to the workers it dispatches. Configure:
 - Secret `GH_ADMIN_TOKEN` — a PAT with repo + workflow scope, so the supervisor can dispatch
   worker runs. Without it the supervisor still runs, doing all work in its own runner.
 
+**Build the image first.** The audit job runs inside a prebuilt runner image with the whole
+arsenal baked in, so nothing is compiled at audit time (a first-run `go install` of nuclei/
+httpx/… costs minutes; an image pull costs seconds). Run the **Build audit image** workflow
+once (`.github/workflows/build-image.yaml`) — it builds from `lib/arsenal.py` and pushes to
+`ghcr.io/<owner>/<repo>:latest`, then rebuilds automatically when the arsenal changes and
+weekly to refresh nuclei templates and advisory data.
+
 Locally (no fan-out): `pip install nothing — standard library only`, then
 `TARGET=https://example.com python -m lib.supervisor --target "$TARGET"`.
 
 ## Layout
 
 ```text
-.github/workflows/audit.yaml   one workflow, two modes (supervisor | worker)
+.github/workflows/audit.yaml   one workflow, two modes (supervisor | worker); runs in the image
+.github/workflows/build-image.yaml  builds & pushes the arsenal image to GHCR
+Dockerfile                     the runner image, arsenal baked from lib/arsenal.py
 lib/
   supervisor.py   entrypoint: plan, act, fan out, verify, report
   worker.py       autonomous specialist for one dispatched subtask

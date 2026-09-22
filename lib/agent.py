@@ -11,7 +11,7 @@ import json
 import threading
 from pathlib import Path
 
-from . import intel
+from . import intel, playbooks
 from .evidence import Evidence, SEVERITIES, validate_finding
 from .run import Runner
 
@@ -70,6 +70,8 @@ class AuditState:
         self.runner = Runner(target, console)
         self.findings: list[dict] = []
         self.notes: list[dict] = []
+        self.hypotheses: list[dict] = []
+        self.plan: dict = {}
         self._lock = threading.RLock()
 
     # -- evidence & findings ---------------------------------------------------
@@ -103,6 +105,48 @@ class AuditState:
         self.console.agent(who, "note: " + message)
         return {"accepted": True}
 
+    # -- hypotheses (the reasoning ledger) -------------------------------------
+    def add_hypothesis(self, who: str, statement: str, surface: str = "") -> dict:
+        if not isinstance(statement, str) or not 4 <= len(statement) <= 1000:
+            return {"error": "statement must be 4..1000 chars"}
+        with self._lock:
+            if len(self.hypotheses) >= 120:
+                return {"error": "hypothesis budget exhausted"}
+            hid = f"H{len(self.hypotheses) + 1:03d}"
+            self.hypotheses.append({"id": hid, "statement": statement[:1000],
+                                    "surface": str(surface)[:120], "status": "proposed",
+                                    "note": "", "evidence_ids": [], "by": who})
+            self.save()
+        self.console.event("HYPOTHESIS", hid, status="proposed", statement=statement[:100])
+        return {"accepted": True, "id": hid}
+
+    def update_hypothesis(self, args: dict) -> dict:
+        hyp = next((h for h in self.hypotheses if h["id"] == args.get("id")), None)
+        status = args.get("status")
+        if hyp is None or status not in ("proposed", "testing", "confirmed", "refuted"):
+            return {"error": "provide an existing hypothesis id and status "
+                    "(proposed|testing|confirmed|refuted)"}
+        with self._lock:
+            hyp["status"] = status
+            if isinstance(args.get("note"), str):
+                hyp["note"] = args["note"][:1000]
+            eid = args.get("evidence_id")
+            if isinstance(eid, str) and eid and eid not in hyp["evidence_ids"]:
+                hyp["evidence_ids"].append(eid)
+            self.save()
+        self.console.event("HYPOTHESIS", hyp["id"], status=status)
+        return {"accepted": True, "id": hyp["id"], "status": status}
+
+    def record_plan(self, args: dict) -> dict:
+        plan = {k: args.get(k) for k in ("objective", "surfaces", "waves", "stop_criteria") if k in args}
+        if not plan:
+            return {"error": "provide at least objective/surfaces/waves/stop_criteria"}
+        with self._lock:
+            self.plan = {**self.plan, **plan, "revised": self.plan.get("revised", 0) + 1}
+            self.save()
+        self.console.event("PLAN", "recorded", revision=self.plan["revised"])
+        return {"accepted": True, "revision": self.plan["revised"]}
+
     def import_worker(self, worker_result: dict, *, focus: str) -> int:
         """Re-ground a worker's findings in this store: import its evidence, remap ids, revalidate."""
         remap = {}
@@ -124,10 +168,10 @@ class AuditState:
 
     # -- persistence -----------------------------------------------------------
     def save(self):
-        (self.run_root / "findings.json").write_text(
-            json.dumps(self.findings, ensure_ascii=True, indent=2), encoding="utf-8")
-        (self.run_root / "notes.json").write_text(
-            json.dumps(self.notes, ensure_ascii=True, indent=2), encoding="utf-8")
+        for name, data in (("findings", self.findings), ("notes", self.notes),
+                           ("hypotheses", self.hypotheses), ("plan", self.plan)):
+            (self.run_root / f"{name}.json").write_text(
+                json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
 
     # -- common tool surface ---------------------------------------------------
     def common_tools(self, who: str) -> dict:
@@ -151,6 +195,25 @@ class AuditState:
                                         for f in self.findings]}),
             "note": (schema("Record a short note/observation for the report and peers.",
                 {"message": STRING}, ("message",)), lambda a: self.note(who, a.get("message", ""))),
+            "add_hypothesis": (schema(
+                "Propose a testable hypothesis about the target (an attack idea or weakness to check). "
+                "Track it, then test it deliberately instead of scanning blindly.",
+                {"statement": STRING, "surface": STRING}, ("statement",)),
+                lambda a: self.add_hypothesis(who, a.get("statement", ""), a.get("surface", ""))),
+            "update_hypothesis": (schema(
+                "Advance a hypothesis: proposed -> testing -> confirmed|refuted, with a note and the "
+                "evidence_id that decided it. A confirmed hypothesis usually becomes a finding.",
+                {"id": STRING, "status": {"type": "string",
+                 "enum": ["proposed", "testing", "confirmed", "refuted"]},
+                 "note": STRING, "evidence_id": STRING}, ("id", "status")), self.update_hypothesis),
+            "list_hypotheses": (schema("List the hypothesis ledger with statuses."),
+                lambda _: {"hypotheses": self.hypotheses}),
+            "playbook": (schema(
+                "Get a concrete testing playbook for a detected technology/surface "
+                "(e.g. wordpress, react-spa, graphql, rest-api, oauth, s3, tls, headers).",
+                {"name": STRING}, ("name",)),
+                lambda a: {"name": a.get("name"), "playbook": playbooks.get(a.get("name", "")),
+                           "available": playbooks.names()}),
         }
 
     def _cve(self, args: dict) -> dict:

@@ -39,6 +39,23 @@ def markdown(result: dict) -> str:
         "| " + " | ".join(str(counts[s]) for s in _ORDER) + " |", "",
         "### Summary", "", _mdblock(result.get("summary", "")), "",
     ]
+    plan = result.get("plan") or {}
+    if plan:
+        lines += ["### Plan", ""]
+        if plan.get("objective"):
+            lines.append(f"**Objective:** {_mdq(plan['objective'])}")
+        for key in ("surfaces", "waves"):
+            if plan.get(key):
+                lines.append(f"**{key.capitalize()}:** " + ", ".join(_mdq(x) for x in plan[key]))
+        if plan.get("stop_criteria"):
+            lines.append(f"**Stop criteria:** {_mdq(plan['stop_criteria'])}")
+        lines.append("")
+    hyps = result.get("hypotheses") or []
+    if hyps:
+        lines += ["### Hypotheses tested", "", "| ID | Status | Hypothesis |", "|---|---|---|"]
+        for h in hyps:
+            lines.append(f"| {h.get('id')} | {h.get('status')} | {_mdq(h.get('statement'))} |")
+        lines.append("")
     if findings:
         lines += ["### Findings (prioritized)", ""]
         for finding in findings:
@@ -142,6 +159,19 @@ def html_page(result: dict) -> str:
         f'<li><code>{_e(w.get("focus"))}</code> — {_e(w.get("status"))} '
         + (f'<a href="{_e(w["url"])}">run</a>' if w.get("url") else "") + "</li>"
         for w in result.get("workers", []))
+    plan = result.get("plan") or {}
+    plan_rows = "".join(
+        f"<tr><td>{_e(k)}</td><td>{_e(', '.join(v) if isinstance(v, list) else v)}</td></tr>"
+        for k, v in (("Objective", plan.get("objective")), ("Surfaces", plan.get("surfaces")),
+                     ("Waves", plan.get("waves")), ("Stop criteria", plan.get("stop_criteria")))
+        if v)
+    plan_html = f"<h2>Plan</h2><table><tbody>{plan_rows}</tbody></table>" if plan_rows else ""
+    hyps = result.get("hypotheses") or []
+    hyp_rows = "".join(
+        f'<tr><td><code>{_e(h.get("id"))}</code></td><td>{_e(h.get("status"))}</td>'
+        f'<td>{_e(h.get("statement"))}</td></tr>' for h in hyps)
+    hyp_html = (f'<h2>Hypotheses tested</h2><table><thead><tr><th>ID</th><th>Status</th>'
+                f'<th>Hypothesis</th></tr></thead><tbody>{hyp_rows}</tbody></table>' if hyps else "")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DeepAudit — {_e(result.get('target'))}</title>
@@ -172,6 +202,8 @@ footer{{color:#9ca3af;font-size:.8rem;margin-top:2rem;border-top:1px solid #e5e7
 <div class="chip"><span>{len(result.get('workers', []))}</span>workers</div>
 <div class="chip"><span>{result.get('evidence_count', 0)}</span>evidence</div></div>
 <h2>Summary</h2><p>{_e(result.get('summary'))}</p>
+{plan_html}
+{hyp_html}
 <h2>Findings</h2>{body}
 <h2>Coverage &amp; limitations</h2><p>{_e(result.get('limitations') or 'Absence of a finding is not proof of absence of a problem.')}</p>
 {f'<h2>Parallel workers</h2><ul>{workers}</ul>' if workers else ''}

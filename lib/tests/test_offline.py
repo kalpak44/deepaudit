@@ -166,6 +166,25 @@ class AsyncDispatcher(unittest.TestCase):
         self.assertEqual(result["gathered"][a["task_id"]]["status"], "ok")
 
 
+class HypothesesAndPlaybooks(unittest.TestCase):
+    def test_ledger_and_plan(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        hid = state.add_hypothesis("supervisor", "API allows IDOR on /users/{id}", "rest-api")["id"]
+        state.update_hypothesis({"id": hid, "status": "confirmed", "note": "reproduced",
+                                 "evidence_id": "e001"})
+        self.assertEqual(state.hypotheses[0]["status"], "confirmed")
+        self.assertIn("e001", state.hypotheses[0]["evidence_ids"])
+        state.record_plan({"objective": "audit", "surfaces": ["a.example.com"],
+                           "waves": ["recon", "deep"], "stop_criteria": "dry"})
+        self.assertEqual(state.plan["revised"], 1)
+
+    def test_playbook_lookup(self):
+        from lib import playbooks
+        self.assertIn("wpscan", playbooks.get("wordpress"))
+        self.assertIn("SPA", playbooks.get("react"))          # alias react -> react-spa
+        self.assertIn("Available", playbooks.get("nonexistent"))
+
+
 class Reporting(unittest.TestCase):
     def test_escapes_and_prioritizes(self):
         result = {

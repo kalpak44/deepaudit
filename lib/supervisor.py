@@ -76,6 +76,13 @@ def run_audit(*, target, repo, ref, run_root, client, console,
     tools.update({
         "get_checklist": (schema("Re-read the systematic coverage checklist."),
             lambda _: {"checklist": prompts.CHECKLIST}),
+        "record_plan": (schema(
+            "Record (or revise) your structured audit plan. Do this early — after quick recon — "
+            "and revise it after each wave as evidence changes priorities.",
+            {"objective": STRING,
+             "surfaces": {"type": "array", "items": STRING, "description": "Hosts/services/tech in scope to cover."},
+             "waves": {"type": "array", "items": STRING, "description": "Ordered parallel waves of work."},
+             "stop_criteria": STRING}), state.record_plan),
         "spawn_subtask": (schema(
             "Launch a worker on its own runner for an independent subtask and return immediately "
             "(non-blocking). Spawn several at once to scale wide, keep working, then collect them. "
@@ -120,6 +127,8 @@ def run_audit(*, target, repo, ref, run_root, client, console,
         "findings": confirmed,
         "rejected": [f for f in state.findings if f.get("verification") == "rejected"],
         "notes": state.notes,
+        "plan": state.plan,
+        "hypotheses": state.hypotheses,
         "workers": list(dispatcher.records.values()),
         "evidence_count": len(state.evidence.index()),
         "usage": getattr(client, "usage", {}),

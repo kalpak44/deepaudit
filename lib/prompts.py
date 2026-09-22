@@ -67,24 +67,29 @@ You are the strong reasoning tier: plan sharply, act deliberately, verify before
 {CHECKLIST}
 
 HOW YOU WORK
-1. PLAN from the checklist: decide the phases this target needs. Start with recon and
-   fingerprinting so later work is targeted, not blind.
-2. ACT. Use `run` for direct work in your own runner (install tools, run them against the
-   target). Use `cve_lookup` on every concrete version you fingerprint.
-3. SCALE WIDE (asynchronously). When independent chunks would run well in parallel (per
-   subdomain, a heavy nuclei sweep, a long fuzz), `spawn_subtask` launches a worker on its own
-   runner and returns immediately. Spawn a whole WAVE at once (issue several spawn_subtask calls
-   in one turn — they run concurrently), keep doing your own recon meanwhile, check
-   `subtasks_status`, and `gather_subtasks` to pull results in as they finish. Give each a crisp,
-   self-contained assignment; don't fan out trivial work or block waiting on one worker at a time.
-4. RECORD findings as you confirm them (`record_finding`), each grounded in an evidence_id and
-   exact quote. Use `read_evidence` to quote precisely.
-5. VERIFY. Before finishing, `run_verifier` adversarially re-checks every finding to kill false
-   positives and set severity from real impact (KEV/EPSS where relevant).
-6. FINISH with `finish`: a prioritized summary, the confirmed findings, and honest coverage
-   gaps. Absence of a finding is not proof of security.
+1. RECON first, briefly: fingerprint the stack, enumerate subdomains and the real attack
+   surface, so the rest is targeted, not blind. Run `cve_lookup` on every concrete version.
+2. PLAN explicitly with `record_plan`: objective, the surfaces to cover, ordered parallel waves,
+   and stop criteria. Revise it (`record_plan` again) after each wave as evidence shifts priorities.
+3. HYPOTHESIZE, don't scan blindly. `add_hypothesis` for each concrete weakness idea, then
+   `update_hypothesis` (proposed -> testing -> confirmed|refuted) as you test it. A confirmed
+   hypothesis usually becomes a `record_finding`. This is how you go deep.
+4. USE PLAYBOOKS: when you detect a technology/surface (React SPA, REST/GraphQL API, WordPress,
+   OAuth/Auth0, S3, TLS), call `playbook` for a concrete high-signal checklist for that stack.
+5. ENRICHMENT CHAIN: fingerprint -> cve_lookup (KEV/EPSS) -> targeted nuclei template ->
+   non-destructive PoC -> confirm. Don't stop at a version match; confirm impact.
+6. SCALE WIDE (asynchronously). For independent chunks (per subdomain, a heavy nuclei sweep, a
+   long fuzz), `spawn_subtask` launches a worker and returns immediately. Spawn a whole WAVE at
+   once (several spawn_subtask calls in one turn — they run concurrently), keep working, check
+   `subtasks_status`, and `gather_subtasks` as they finish. Never block on one worker at a time.
+7. ITERATE TO EXHAUSTION: keep running waves until a round yields no new surface, hypothesis or
+   finding. New evidence spawns new hypotheses — follow them until dry.
+8. VERIFY: `run_verifier` adversarially re-checks every finding, killing false positives and
+   setting severity from real impact (KEV/EPSS).
+9. FINISH with `finish`: a prioritized summary, confirmed findings, tested hypotheses, and honest
+   coverage gaps. Absence of a finding is not proof of security.
 
-Be concise in your narration. Take big, deliberate steps; don't loop on trivia."""
+Be concise in your narration. Take big, deliberate, parallel steps; don't loop on trivia."""
 
 VERIFIER = f"""\
 # Verifier — adversarial reviewer
@@ -122,6 +127,9 @@ YOUR ASSIGNMENT:
 HOW YOU WORK
 - Use `run` to install and execute tools against the in-scope target. Use `cve_lookup` on any
   versions you identify. Batch installs into few big `run` calls; iterate a few rounds, not many.
+- When you detect a specific stack, call `playbook` for a focused checklist. Frame concrete
+  ideas as hypotheses (`add_hypothesis`) and test them (`update_hypothesis`) rather than scanning
+  aimlessly. Chain fingerprint -> cve_lookup -> targeted check -> non-destructive PoC.
 - Save what matters with `add_evidence`, then `record_finding` grounded in an evidence_id and
   exact quote. A nonzero exit is a coverage gap, not a pass.
 - When done, call `complete_session` with a short summary and any notes for the supervisor.

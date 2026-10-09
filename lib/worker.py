@@ -19,7 +19,7 @@ from .llm import FAST, LLMClient, agent_loop
 from .target import target_url
 
 
-def run_worker(*, target, task, focus, run_root, client, console, max_steps=28, dangerous=False) -> dict:
+def run_worker(*, target, task, focus, run_root, client, console, max_steps=28, dangerous=False, scope_allowlist="") -> dict:
     state = AuditState(target, run_root, console, dangerous=dangerous, client=client)
     captured: dict = {}
 
@@ -43,7 +43,7 @@ def run_worker(*, target, task, focus, run_root, client, console, max_steps=28, 
          "enum": ["completed", "blocked", "not_applicable"], "default": "completed"}},
         ("summary",)), complete)
 
-    outcome = agent_loop(client, prompts.worker(focus, task, dangerous),
+    outcome = agent_loop(client, prompts.worker(focus, task, dangerous, allowlist=scope_allowlist),
                          f"Target: {target}\nFocus: {focus}\n\nBegin your assignment.",
                          tools, tier=FAST, max_steps=max_steps, require_terminal=True,
                          terminal_tools=("complete_session",),
@@ -76,6 +76,7 @@ def main(argv=None) -> int:
     parser.add_argument("--out-dir", default="audits")
     parser.add_argument("--out", default="worker.json")
     parser.add_argument("--dangerous", default=os.getenv("DANGEROUS", ""))
+    parser.add_argument("--scope-allow", default=os.getenv("SCOPE_ALLOWLIST", ""))
     args = parser.parse_args(argv)
     try:
         target = target_url(args.target)
@@ -91,6 +92,7 @@ def main(argv=None) -> int:
     console.event("WORKER", "started", focus=args.focus, target=target, dangerous=dangerous)
     client = LLMClient()
     result = run_worker(target=target, task=args.task, focus=args.focus, dangerous=dangerous,
+                        scope_allowlist=args.scope_allow,
                         run_root=run_root, client=client, console=console)
     result["task_id"] = args.task_id
     Path(args.out).write_text(json.dumps(result, ensure_ascii=True, indent=2), encoding="utf-8")

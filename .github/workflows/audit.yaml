@@ -24,6 +24,15 @@ on:
         required: false
         default: false
         type: boolean
+      scope_allowlist:
+        description: >-
+          Extra authorized hosts/IPs/CIDRs beyond the target's domain tree (comma/space
+          separated). Use ONLY for infrastructure you are authorized to test that lives off
+          the registrable domain (e.g. a hosting IP range or another org's netblock the
+          target app runs on). Leave empty for a pure domain-scoped audit.
+        required: false
+        default: ''
+        type: string
       mode:
         description: supervisor (entrypoint) or worker (dispatched by the supervisor)
         required: false
@@ -91,6 +100,7 @@ jobs:
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           DANGEROUS: ${{ inputs.dangerous }}
+          SCOPE_ALLOWLIST: ${{ inputs.scope_allowlist }}
         run: python -m lib.supervisor --target "$TARGET"
 
       - name: Worker subtask
@@ -100,6 +110,7 @@ jobs:
           FOCUS: ${{ inputs.focus }}
           TASK_ID: ${{ inputs.task_id }}
           DANGEROUS: ${{ inputs.dangerous }}
+          SCOPE_ALLOWLIST: ${{ inputs.scope_allowlist }}
         run: python -m lib.worker --target "$TARGET" --task-id "$TASK_ID"
 
       - name: Upload worker result

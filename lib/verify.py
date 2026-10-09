@@ -15,7 +15,7 @@ from .evidence import SEVERITIES
 from .llm import STRONG, agent_loop
 
 
-def run_verifier(state, client, *, max_steps=40, dangerous=False, log=lambda _: None) -> dict:
+def run_verifier(state, client, *, max_steps=40, dangerous=False, scope_allowlist="", log=lambda _: None) -> dict:
     unreviewed = [f for f in state.findings if f.get("verification") == "unreviewed"]
     if not unreviewed:
         return {"reviewed": 0, "stopped": "nothing_to_review"}
@@ -61,7 +61,7 @@ def run_verifier(state, client, *, max_steps=40, dangerous=False, log=lambda _: 
     task = ("Review these findings adversarially. Try to refute each using only its cited "
             "evidence, then record a verdict. Findings:\n"
             + _digest(state.findings))
-    outcome = agent_loop(client, prompts.verifier_prompt(dangerous), task, tools, tier=STRONG,
+    outcome = agent_loop(client, prompts.verifier_prompt(dangerous, allowlist=scope_allowlist), task, tools, tier=STRONG,
                          max_steps=max_steps, require_terminal=True,
                          terminal_tools=("complete_session",),
                          terminal_hint="give every remaining finding a verdict, then call "

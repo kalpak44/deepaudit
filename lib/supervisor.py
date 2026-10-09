@@ -24,10 +24,10 @@ SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 
 def run_audit(*, target, repo, ref, run_root, client, console,
-              enable_dispatch=True, max_steps=60, dangerous=False) -> dict:
+              enable_dispatch=True, max_steps=60, dangerous=False, scope_allowlist="") -> dict:
     state = AuditState(target, run_root, console, dangerous=dangerous, client=client)
     dispatcher = Dispatcher(repo=repo, ref=ref, target=target, run_root=run_root, console=console,
-                            dangerous=dangerous)
+                            dangerous=dangerous, scope_allowlist=scope_allowlist)
     captured: dict = {}
 
     gathered: set[str] = set()
@@ -57,7 +57,7 @@ def run_audit(*, target, repo, ref, run_root, client, console,
         return {"results": _ingest(dispatcher.gather(args)["gathered"])}
 
     def run_verifier(_args: dict) -> dict:
-        return verify.run_verifier(state, client, dangerous=dangerous,
+        return verify.run_verifier(state, client, dangerous=dangerous, scope_allowlist=scope_allowlist,
                                    log=lambda m: console.agent("verifier", m))
 
     def finish(args: dict) -> dict:
@@ -116,7 +116,7 @@ def run_audit(*, target, repo, ref, run_root, client, console,
             "Plan from the checklist, recon and fingerprint first, then go deep. Look up CVEs on "
             "every version you find. Fan out independent work to workers. Record grounded findings, "
             "run the verifier, then finish with a prioritized report.")
-    outcome = agent_loop(client, prompts.supervisor_prompt(dangerous), task, tools, tier=STRONG,
+    outcome = agent_loop(client, prompts.supervisor_prompt(dangerous, allowlist=scope_allowlist), task, tools, tier=STRONG,
                          max_steps=max_steps, require_terminal=True, terminal_tools=("finish",),
                          terminal_hint="gather any still-running workers, run_verifier if any "
                          "finding is unreviewed, then finish with a prioritized summary and honest "
@@ -142,6 +142,7 @@ def run_audit(*, target, repo, ref, run_root, client, console,
         "resources": state.resources,
         "components": state.components,
         "attribution": state.attribution,
+        "scope_allowlist": scope_allowlist,
         "mutations": state.mutations,
         "workers": list(dispatcher.records.values()),
         "evidence_count": len(state.evidence.index()),
@@ -158,6 +159,7 @@ def main(argv=None) -> int:
     parser.add_argument("--run-id", default=os.getenv("GITHUB_RUN_ID", "local"))
     parser.add_argument("--out-dir", default="audits")
     parser.add_argument("--dangerous", default=os.getenv("DANGEROUS", ""))
+    parser.add_argument("--scope-allow", default=os.getenv("SCOPE_ALLOWLIST", ""))
     args = parser.parse_args(argv)
     try:
         target = target_url(args.target)
@@ -179,7 +181,7 @@ def main(argv=None) -> int:
 
     result = run_audit(target=target, repo=args.repo, ref=args.ref, run_root=run_root,
                        client=client, console=console, enable_dispatch=enable_dispatch,
-                       dangerous=dangerous)
+                       dangerous=dangerous, scope_allowlist=args.scope_allow)
 
     (run_root / "report.json").write_text(json.dumps(result, ensure_ascii=True, indent=2), encoding="utf-8")
     (run_root / "report.html").write_text(report_render.html_page(result), encoding="utf-8")

@@ -18,7 +18,7 @@ import json
 import re
 import ssl
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 _CVE = re.compile(r"CVE-\d{4}-\d{4,7}")
 _KEV_URL = ("www.cisa.gov", "/sites/default/files/feeds/known_exploited_vulnerabilities.json")
@@ -284,4 +284,72 @@ def exploit_intel(cve_id: str) -> dict:
                      "add_evidence and cite it as poc_evidence_id/poc_quote on the finding.",
         "caution": "PoC repositories are untrusted third-party code: read before running, never "
                    "paste-and-execute blindly, and keep every request aimed only at the target.",
+    }
+
+
+_RDAP_BOOTSTRAP = "rdap.org"
+
+
+def _rdap_orgs(entities) -> list:
+    """Flatten vCard fn/org names out of an RDAP entity tree."""
+    out = []
+    for entity in entities or []:
+        vcard = entity.get("vcardArray")
+        if isinstance(vcard, list) and len(vcard) > 1:
+            for item in vcard[1]:
+                if isinstance(item, list) and item and item[0] in ("fn", "org") and len(item) > 3:
+                    out.append(str(item[3]))
+        out += _rdap_orgs(entity.get("entities"))
+    return out
+
+
+def ip_owner(ip: str, *, timeout: int = 20) -> dict:
+    """RDAP ownership lookup for an IP: who owns the netblock (org/netname/country/range).
+
+    Follows RDAP bootstrap redirects to the responsible RIR. Research traffic, not a target probe;
+    used to decide whether a discovered origin IP is in scope (target domain or allowlist) or a
+    third party that must not be touched.
+    """
+    import ipaddress
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return {"_error": f"not an IP address: {ip!r}"}
+    host, path, data = _RDAP_BOOTSTRAP, f"/ip/{ip}", None
+    for _ in range(5):
+        conn = http.client.HTTPSConnection(host, 443, timeout=timeout,
+                                           context=ssl.create_default_context())
+        try:
+            conn.request("GET", path, headers={"User-Agent": "DeepAudit/2.0",
+                         "Accept": "application/rdap+json, application/json"})
+            response = conn.getresponse()
+            raw = response.read(4_000_000)
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.getheader("Location")
+                if not location:
+                    return {"_error": "RDAP redirect without Location"}
+                split = urlsplit(location if "://" in location else "https://" + location)
+                host = split.netloc
+                path = (split.path or "/") + (("?" + split.query) if split.query else "")
+                continue
+            if response.status != 200:
+                return {"_error": f"RDAP returned HTTP {response.status} for {ip}"}
+            data = json.loads(raw.decode("utf-8", "replace"))
+            break
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            return {"_error": f"RDAP lookup failed: {exc}"}
+        finally:
+            conn.close()
+    if not isinstance(data, dict):
+        return {"_error": f"RDAP lookup failed for {ip}"}
+    start, end = data.get("startAddress"), data.get("endAddress")
+    return {
+        "ip": ip,
+        "name": data.get("name"),
+        "handle": data.get("handle"),
+        "country": data.get("country"),
+        "range": f"{start} - {end}" if start else None,
+        "type": data.get("type"),
+        "owners": list(dict.fromkeys(_rdap_orgs(data.get("entities"))))[:6],
+        "remarks": [r.get("description") for r in (data.get("remarks") or []) if r.get("description")][:2],
     }

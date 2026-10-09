@@ -585,6 +585,17 @@ class AuditState:
                 lambda a: self.record_attribution(a)),
             "get_attribution": (schema("Show the OSINT ownership/attribution gathered so far."),
                 lambda _: {"attribution": self.attribution}),
+            "ip_owner": (schema(
+                "RDAP ownership lookup for an IP address: returns the netblock owner/org, netname, "
+                "country and range. Use it on ANY origin IP or bare address you discover, BEFORE you "
+                "scan or probe it, to decide scope: an IP is in scope only if it is in the target's "
+                "domain tree OR the engagement allowlist. If the owner is a DIFFERENT organization and "
+                "the IP is not allowlisted, it is OUT of scope — do not probe it; record it as "
+                "out-of-scope attribution and move on. A shared/catch-all host that answers any Host "
+                "header is also not necessarily the target's origin. This is a research lookup, not "
+                "target traffic.",
+                {"ip": STRING}, ("ip",)),
+                lambda a: intel.ip_owner(str(a.get("ip", "")).strip())),
             "playbook": (schema(
                 "Get a concrete testing plan for something you DETECTED — a technology, platform, "
                 "framework, CMS, service/appliance, or a vuln class/CVE you're hypothesizing. "

@@ -27,9 +27,10 @@ WORKFLOW = "audit.yaml"
 class Dispatcher:
     def __init__(self, *, repo: str, ref: str, target: str, run_root: Path, console,
                  poll=12, timeout=3000, max_workers=8, concurrency=6, dangerous=False,
-                 sleep=time.sleep, now=time.monotonic):
+                 scope_allowlist="", sleep=time.sleep, now=time.monotonic):
         self.repo, self.ref, self.target = repo, ref, target
         self.run_root, self.console, self.dangerous = run_root, console, dangerous
+        self.scope_allowlist = scope_allowlist
         self.poll, self.timeout, self.max_workers = poll, timeout, max_workers
         self.sleep, self.now = sleep, now
         self.records: dict[str, dict] = {}   # task_id -> {task_id, focus, status, run_id, url}
@@ -95,7 +96,8 @@ class Dispatcher:
                           "-f", "mode=worker", "-f", f"target={self.target}",
                           "-f", f"task_id={task_id}", "-f", f"task={task}",
                           "-f", f"focus={focus}", "-f", f"run_name={run_name}",
-                          "-f", f"dangerous={'true' if self.dangerous else 'false'}"])
+                          "-f", f"dangerous={'true' if self.dangerous else 'false'}",
+                          "-f", f"scope_allowlist={self.scope_allowlist}"])
                 run_id = self._await_run(run_name, deadline)
                 record["run_id"] = run_id
                 record["url"] = f"https://github.com/{self.repo}/actions/runs/{run_id}"

@@ -94,6 +94,9 @@ def markdown(result: dict) -> str:
         "| " + " | ".join(str(counts[s]) for s in _ORDER) + " |", "",
         "### Summary", "", _mdblock(result.get("summary", "")), "",
     ]
+    if (result.get("scope_allowlist") or "").strip():
+        lines += [f"> **Authorized scope allowlist (beyond the domain tree):** "
+                  f"`{_mdq(result['scope_allowlist'])}`", ""]
     lines += _attribution_md(result.get("attribution") or {})
     plan = result.get("plan") or {}
     if plan:
@@ -386,6 +389,7 @@ footer{{color:#9ca3af;font-size:.8rem;margin-top:2rem;border-top:1px solid #e5e7
 <div class="chip"><span>{result.get('evidence_count', 0)}</span>evidence</div>
 <div class="chip"><span>{len(result.get('resources', []))}</span>resources</div></div>
 <h2>Summary</h2><p>{_e(result.get('summary'))}</p>
+{f'<p class="note"><b>Authorized scope allowlist (beyond the domain tree):</b> <code>{_e(result.get("scope_allowlist"))}</code></p>' if (result.get('scope_allowlist') or '').strip() else ''}
 {attr_html}
 {plan_html}
 {hyp_html}

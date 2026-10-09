@@ -122,6 +122,10 @@ edge WAF and very often Cloudflare Access too, since the origin usually doesn't 
 - Validate the origin really serves THIS target before reporting it as the origin: a box that
   answers every Host identically (even unrelated domains) or doesn't serve the target's own content
   is a shared/catch-all vhost, not necessarily this target's origin — say which it is, with evidence.
+- SCOPE-GATE every bare IP: `ip_owner` (RDAP) it before scanning. In scope only if it is in the
+  target's domain tree OR the engagement allowlist. If the netblock owner is a DIFFERENT org and it
+  is not allowlisted, it is a third party — record the ownership, do NOT probe/exploit it, and flag
+  it as "needs authorization" rather than reporting it as a finding against the target.
 CLOUDFLARE ACCESS (Zero Trust) specifics:
 - Service tokens: look for CF-Access-Client-Id / CF-Access-Client-Secret leaked in JS/config/CI.
 - Per-path policy gaps (a policy on `/` but not `/api` or `/healthz`); `/cdn-cgi/access/*` probes.

@@ -15,7 +15,7 @@ from .evidence import SEVERITIES
 from .llm import STRONG, agent_loop
 
 
-def run_verifier(state, client, *, max_steps=40, log=lambda _: None) -> dict:
+def run_verifier(state, client, *, max_steps=40, dangerous=False, log=lambda _: None) -> dict:
     unreviewed = [f for f in state.findings if f.get("verification") == "unreviewed"]
     if not unreviewed:
         return {"reviewed": 0, "stopped": "nothing_to_review"}
@@ -61,7 +61,7 @@ def run_verifier(state, client, *, max_steps=40, log=lambda _: None) -> dict:
     task = ("Review these findings adversarially. Try to refute each using only its cited "
             "evidence, then record a verdict. Findings:\n"
             + _digest(state.findings))
-    outcome = agent_loop(client, prompts.VERIFIER, task, tools, tier=STRONG,
+    outcome = agent_loop(client, prompts.verifier_prompt(dangerous), task, tools, tier=STRONG,
                          max_steps=max_steps, require_terminal=True,
                          terminal_tools=("complete_session",), log=log)
     for finding in state.findings:  # anything the reviewer never reached is not silently trusted
@@ -78,4 +78,6 @@ def run_verifier(state, client, *, max_steps=40, log=lambda _: None) -> dict:
 def _digest(findings) -> str:
     import json
     return json.dumps([{k: f.get(k) for k in ("id", "title", "severity", "summary",
-                        "evidence_id", "quote", "cve")} for f in findings], ensure_ascii=True, indent=1)
+                        "evidence_id", "quote", "cve", "reproduction", "poc_evidence_id",
+                        "poc_quote", "poc_verified", "mutation_id") if f.get(k) is not None}
+                       for f in findings], ensure_ascii=True, indent=1)

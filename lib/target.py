@@ -46,6 +46,41 @@ def hostname(target: str) -> str:
     return urlsplit(target_url(target)).hostname
 
 
+# Common multi-label public suffixes where the registrable domain needs one extra label
+# (e.g. "shop.example.co.uk" -> "example.co.uk", not "co.uk"). Best-effort, not a full PSL.
+_MULTI_LABEL_SUFFIXES = {
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk", "ltd.uk", "plc.uk",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
+    "co.nz", "net.nz", "org.nz", "govt.nz",
+    "co.in", "net.in", "org.in", "gen.in", "firm.in",
+    "com.br", "net.br", "org.br", "gov.br",
+    "com.cn", "net.cn", "org.cn", "gov.cn",
+    "co.za", "org.za", "net.za", "gov.za",
+    "com.mx", "com.sg", "com.hk", "co.kr", "co.il", "com.tr", "com.ar", "com.tw",
+}
+
+
+def registrable_domain(host: str) -> str:
+    """Best-effort root registrable domain: shop.example.com -> example.com, an IP -> itself.
+
+    Not a full public-suffix-list implementation, but covers the common cases well enough to
+    widen scope from "this one subdomain" to "the whole domain and all its subdomains" when a
+    subdomain is given as the target.
+    """
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    labels = host.rstrip(".").split(".")
+    if len(labels) <= 2:
+        return host
+    if ".".join(labels[-2:]) in _MULTI_LABEL_SUFFIXES:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
 def origin(url: str):
     u = urlsplit(url)
     return u.scheme, u.hostname, u.port or (443 if u.scheme == "https" else 80)
@@ -60,11 +95,15 @@ def public_address(host: str, port: int) -> str:
 
 
 def assert_in_scope(candidate: str, target: str) -> str:
-    """Confirm a candidate URL/host shares the authorized target's registrable host. Raise otherwise."""
-    want = hostname(target)
+    """Confirm a candidate shares the authorized target's registrable root domain. Raise otherwise.
+
+    Scope is the whole domain, not just the exact host given: if the target is a subdomain
+    (shop.example.com), the root (example.com) and every other subdomain of it are in scope too.
+    """
+    root = registrable_domain(hostname(target))
     got = hostname(candidate) if "://" in candidate or "." in candidate else candidate
-    if got != want and not (got or "").endswith("." + want):
-        raise ValueError(f"out of scope: {candidate!r} is not {want} or a subdomain of it")
+    if got != root and not (got or "").endswith("." + root):
+        raise ValueError(f"out of scope: {candidate!r} is not {root} or a subdomain of it")
     return got
 
 

@@ -28,12 +28,23 @@ def markdown(result: dict) -> str:
     findings = result.get("findings", [])
     counts = _counts(findings)
     kev = sum(1 for f in findings if f.get("kev"))
+    mutations = result.get("mutations") or []
+    unresolved = [m for m in mutations if m.get("status") == "revert_failed"]
     lines = [
         f"## 🛡️ DeepAudit — `{_mdq(result.get('target'))}`", "",
         f"**Status:** {result.get('status', 'unknown')} · "
         f"**Findings:** {len(findings)} · **KEV:** {kev} · "
         f"**Evidence items:** {result.get('evidence_count', 0)} · "
-        f"**Workers:** {len(result.get('workers', []))}", "",
+        f"**Resources:** {len(result.get('resources', []))} · "
+        f"**Workers:** {len(result.get('workers', []))}"
+        + (" · ⚠️ **DANGEROUS MODE**" if result.get("dangerous") else ""), "",
+    ]
+    if unresolved:
+        lines += ["> 🚨 **CRITICAL — unresolved state change(s) left on the target.** The agent "
+                  "could not fully revert one or more PoC mutations. Manual cleanup is required "
+                  "before this target is left unattended. See **State changes** below for exactly "
+                  "what was changed and the intended revert plan.", ""]
+    lines += [
         "| " + " | ".join(f"{_BADGE[s]} {s}" for s in _ORDER) + " |",
         "|" + "---|" * len(_ORDER),
         "| " + " | ".join(str(counts[s]) for s in _ORDER) + " |", "",
@@ -56,6 +67,29 @@ def markdown(result: dict) -> str:
         for h in hyps:
             lines.append(f"| {h.get('id')} | {h.get('status')} | {_mdq(h.get('statement'))} |")
         lines.append("")
+    resources = result.get("resources") or []
+    if resources:
+        rcounts: dict[str, int] = {}
+        for r in resources:
+            rcounts[r.get("status", "discovered")] = rcounts.get(r.get("status", "discovered"), 0) + 1
+        lines += ["### Resources audited", "",
+                  f"**Total:** {len(resources)} · " + " · ".join(f"{k}: {v}" for k, v in rcounts.items()),
+                  "", "| ID | Kind | Resource | Status | Detail |", "|---|---|---|---|---|"]
+        for r in resources:
+            lines.append(f"| {r.get('id')} | {_mdq(r.get('kind'))} | {_mdq(r.get('name'))} | "
+                         f"{r.get('status')} | {_mdq(r.get('detail'))} |")
+        lines.append("")
+    if mutations:
+        lines += ["### State changes (dangerous mode)", "",
+                  "Every PoC that changed target state, declared and reverted. `revert_failed` "
+                  "means manual cleanup is required.", "",
+                  "| ID | Change | Revert plan | Status | Note |", "|---|---|---|---|---|"]
+        for m in mutations:
+            status = m.get("status", "pending_revert")
+            badge = "🚨" if status == "revert_failed" else ("✅" if status == "reverted" else "⏳")
+            lines.append(f"| {m.get('id')} | {_mdq(m.get('description'))} | "
+                         f"{_mdq(m.get('revert_plan'))} | {badge} {status} | {_mdq(m.get('note'))} |")
+        lines.append("")
     if findings:
         lines += ["### Findings (prioritized)", ""]
         for finding in findings:
@@ -67,6 +101,12 @@ def markdown(result: dict) -> str:
                 tags.append(str(finding["cve"]))
             if finding.get("epss"):
                 tags.append(f"EPSS {float(finding['epss']):.2f}")
+            if finding.get("poc_verified"):
+                tags.append("✅ PoC verified")
+            elif "poc_verified" in finding:
+                tags.append("⚠️ PoC unverified")
+            if finding.get("mutation_id"):
+                tags.append(f"🧪 reverted state change ({finding['mutation_id']})")
             verdict = finding.get("verification", "unreviewed")
             suffix = f" — {finding.get('cvss')}" if finding.get("cvss") else ""
             lines.append(f"<details><summary>{badge} <b>{html.escape(_mdq(finding.get('title')))}</b> "
@@ -76,7 +116,13 @@ def markdown(result: dict) -> str:
             if finding.get("impact"):
                 lines.append(f"\n**Impact:** {_mdblock(finding['impact'])}\n")
             if finding.get("reproduction"):
-                lines.append(f"\n**Reproduction:**\n\n```\n{_fence(finding['reproduction'])}\n```\n")
+                label = ("Reproduction (verified — PoC actually ran, see output below)"
+                         if finding.get("poc_verified") else
+                         "Reproduction (narrated by the agent, not independently captured)")
+                lines.append(f"\n**{label}:**\n\n```\n{_fence(finding['reproduction'])}\n```\n")
+            if finding.get("poc_evidence_id"):
+                lines.append(f"\n**PoC output** (`{finding.get('poc_evidence_id')}`) — raw result of "
+                             f"actually running the PoC:\n\n```\n{_fence(finding.get('poc_quote', ''))}\n```\n")
             lines.append(f"\n**Evidence** (`{finding.get('evidence_id')}`):\n\n```\n{_fence(finding.get('quote', ''))}\n```\n")
             lines.append(f"\n**Remediation:** {_mdblock(finding.get('remediation', ''))}\n")
             if finding.get("verification_reason"):
@@ -128,6 +174,13 @@ def _finding_html(f: dict) -> str:
         tags.append(f'<span class="tag">EPSS {float(f["epss"]):.2f}</span>')
     if f.get("cvss"):
         tags.append(f'<span class="tag">CVSS {_e(f["cvss"])}</span>')
+    if f.get("poc_verified"):
+        tags.append('<span class="tag" style="background:#15803d">✅ PoC verified</span>')
+    elif "poc_verified" in f:
+        tags.append('<span class="tag" style="background:#92400e">⚠️ PoC unverified</span>')
+    if f.get("mutation_id"):
+        tags.append(f'<span class="tag" style="background:#6d28d9">🧪 reverted state change '
+                    f'({_e(f["mutation_id"])})</span>')
     parts = [f'<article class="finding"><h3><span class="dot" style="background:{tone}"></span>'
              f'{_e(f.get("title"))}</h3>',
              f'<p class="meta"><b style="color:{tone}">{_e(f.get("severity"))}</b> · '
@@ -139,7 +192,13 @@ def _finding_html(f: dict) -> str:
     if f.get("impact"):
         parts.append(f'<p><b>Impact:</b> {_e(f["impact"])}</p>')
     if f.get("reproduction"):
-        parts.append(f'<p><b>Reproduction:</b></p><pre><code>{_e(f["reproduction"])}</code></pre>')
+        label = ("Reproduction (verified — PoC actually ran, see output below):"
+                 if f.get("poc_verified") else
+                 "Reproduction (narrated by the agent, not independently captured):")
+        parts.append(f'<p><b>{label}</b></p><pre><code>{_e(f["reproduction"])}</code></pre>')
+    if f.get("poc_evidence_id"):
+        parts.append(f'<p><b>PoC output</b> (<code>{_e(f["poc_evidence_id"])}</code>) — raw result of '
+                     f'actually running the PoC:</p><pre><code>{_e(f.get("poc_quote"))}</code></pre>')
     parts.append(f'<p><b>Evidence:</b></p><pre><code>{_e(f.get("quote"))}</code></pre>')
     parts.append(f'<p><b>Remediation:</b> {_e(f.get("remediation"))}</p>')
     if f.get("verification_reason"):
@@ -172,6 +231,29 @@ def html_page(result: dict) -> str:
         f'<td>{_e(h.get("statement"))}</td></tr>' for h in hyps)
     hyp_html = (f'<h2>Hypotheses tested</h2><table><thead><tr><th>ID</th><th>Status</th>'
                 f'<th>Hypothesis</th></tr></thead><tbody>{hyp_rows}</tbody></table>' if hyps else "")
+    resources = result.get("resources") or []
+    res_rows = "".join(
+        f'<tr><td><code>{_e(r.get("id"))}</code></td><td>{_e(r.get("kind"))}</td>'
+        f'<td>{_e(r.get("name"))}</td><td>{_e(r.get("status"))}</td><td>{_e(r.get("detail"))}</td></tr>'
+        for r in resources)
+    res_html = (f'<h2>Resources audited ({len(resources)})</h2>'
+                f'<table><thead><tr><th>ID</th><th>Kind</th><th>Resource</th><th>Status</th>'
+                f'<th>Detail</th></tr></thead><tbody>{res_rows}</tbody></table>' if resources else "")
+    mutations = result.get("mutations") or []
+    unresolved = [m for m in mutations if m.get("status") == "revert_failed"]
+    mut_rows = "".join(
+        f'<tr><td><code>{_e(m.get("id"))}</code></td><td>{_e(m.get("description"))}</td>'
+        f'<td>{_e(m.get("revert_plan"))}</td>'
+        f'<td>{"🚨" if m.get("status") == "revert_failed" else ("✅" if m.get("status") == "reverted" else "⏳")} '
+        f'{_e(m.get("status"))}</td><td>{_e(m.get("note"))}</td></tr>' for m in mutations)
+    mut_html = (f'<h2>State changes (dangerous mode) ({len(mutations)})</h2>'
+                f'<table><thead><tr><th>ID</th><th>Change</th><th>Revert plan</th><th>Status</th>'
+                f'<th>Note</th></tr></thead><tbody>{mut_rows}</tbody></table>' if mutations else "")
+    banner_html = (
+        '<div class="banner">🚨 <b>CRITICAL — unresolved state change(s) left on the target.</b> '
+        'The agent could not fully revert one or more PoC mutations. Manual cleanup is required '
+        'before this target is left unattended. See <b>State changes</b> below.</div>'
+        if unresolved else "")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DeepAudit — {_e(result.get('target'))}</title>
@@ -194,16 +276,23 @@ display:flex;flex-direction:column;align-items:center;min-width:64px}}
 font-size:.75rem;margin:.1rem}}
 pre{{background:#f6f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:.8rem;overflow-x:auto}}
 .review{{color:#6b7280;font-style:italic}} .note{{color:#6b7280}}
+.banner{{background:#b3123a;color:#fff;border-radius:8px;padding:.8rem 1rem;margin:1rem 0;font-weight:600}}
+.dangerous{{color:#b3123a;font-weight:700}}
 footer{{color:#9ca3af;font-size:.8rem;margin-top:2rem;border-top:1px solid #e5e7eb;padding-top:1rem}}
 </style></head><body>
 <h1>🛡️ DeepAudit report</h1>
-<p class="sub">{_e(result.get('target'))} · status: {_e(result.get('status'))} · run {_e(result.get('run_id'))}</p>
+<p class="sub">{_e(result.get('target'))} · status: {_e(result.get('status'))} · run {_e(result.get('run_id'))}
+{' · <span class="dangerous">⚠️ DANGEROUS MODE</span>' if result.get('dangerous') else ''}</p>
+{banner_html}
 <div class="chips">{chips}
 <div class="chip"><span>{len(result.get('workers', []))}</span>workers</div>
-<div class="chip"><span>{result.get('evidence_count', 0)}</span>evidence</div></div>
+<div class="chip"><span>{result.get('evidence_count', 0)}</span>evidence</div>
+<div class="chip"><span>{len(result.get('resources', []))}</span>resources</div></div>
 <h2>Summary</h2><p>{_e(result.get('summary'))}</p>
 {plan_html}
 {hyp_html}
+{res_html}
+{mut_html}
 <h2>Findings</h2>{body}
 <h2>Coverage &amp; limitations</h2><p>{_e(result.get('limitations') or 'Absence of a finding is not proof of absence of a problem.')}</p>
 {f'<h2>Parallel workers</h2><ul>{workers}</ul>' if workers else ''}

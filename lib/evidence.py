@@ -74,7 +74,16 @@ class Evidence:
 
 
 def validate_finding(entry: dict, evidence: Evidence) -> dict:
-    """Return a normalized finding record or raise ValueError. Enforces evidence grounding."""
+    """Return a normalized finding record or raise ValueError. Enforces evidence grounding.
+
+    A finding's main claim is grounded the same way its PoC is: `poc_evidence_id` +
+    `poc_quote` must be an exact excerpt of a real evidence item (ordinarily the captured
+    stdout/stderr of a `run` call that actually executed the reproduction), checked with the
+    same `ground()` used for the primary quote. This is what turns `reproduction` from prose
+    the model could invent into a claim backed by a real captured artifact. `poc_verified` is
+    therefore never model-asserted — it is set here, deterministically, from whether that
+    grounding succeeded.
+    """
     if not isinstance(entry, dict):
         raise ValueError("finding must be an object")
     for key in ("title", "summary", "remediation", "evidence_id", "quote", "severity"):
@@ -97,4 +106,17 @@ def validate_finding(entry: dict, evidence: Evidence) -> dict:
     for optional in ("cve", "cvss", "epss", "kev", "reproduction", "impact"):
         if entry.get(optional) not in (None, ""):
             record[optional] = entry[optional] if optional in ("cvss", "epss", "kev") else str(entry[optional])[:3000]
+    poc_eid, poc_quote = entry.get("poc_evidence_id"), entry.get("poc_quote")
+    if poc_eid or poc_quote:
+        if not (isinstance(poc_eid, str) and poc_eid.strip()
+                and isinstance(poc_quote, str) and 8 <= len(poc_quote) <= 2000):
+            raise ValueError("poc_evidence_id and poc_quote must both be given together, "
+                             "poc_quote an exact 8..2000 char excerpt of the captured PoC output")
+        if not evidence.ground(poc_eid, poc_quote):
+            raise ValueError("poc_quote does not appear in poc_evidence_id; the PoC must be "
+                             "grounded in the real captured output of the `run` call that executed it")
+        record["poc_evidence_id"], record["poc_quote"] = poc_eid, poc_quote[:2000]
+        record["poc_verified"] = True
+    elif record.get("reproduction"):
+        record["poc_verified"] = False
     return record

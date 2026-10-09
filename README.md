@@ -38,19 +38,24 @@ you ── dispatch Audit(target, authorized=true)
 
 ## Scope & safety
 
-Exactly one target is in scope (`$AUDIT_TARGET` and its subdomains). Active testing and
-non-destructive proof-of-concept against that target are permitted; denial-of-service, data
-destruction, persistence, pivoting to other hosts, and exfiltration of runner secrets are not.
-The runner is ephemeral and its secrets are stripped from tool environments. The target is
-validated and must resolve only to public addresses. Run this only against systems you are
-authorized to assess — see `SECURITY.md`.
+In scope is the *registrable root domain* of `$AUDIT_TARGET` and every subdomain of it — if you
+give a specific subdomain as the target, the audit still covers its root domain and all other
+subdomains it discovers, not just the one named. Active testing and non-destructive
+proof-of-concept against that domain are permitted; denial-of-service, data destruction,
+persistence, pivoting to other hosts, and exfiltration of runner secrets are not. Every run is a
+full scan — there is no input to narrow scope or skip coverage. The runner is ephemeral and its
+secrets are stripped from tool environments. The target is validated and must resolve only to
+public addresses. Run this only against systems you are authorized to assess — see `SECURITY.md`.
+
+The optional **`dangerous`** input additionally permits reversible, state-changing PoCs (e.g.
+creating a test record to confirm IDOR) as a last resort when non-destructive confirmation isn't
+possible — every such change must be declared and proven reverted before the run can finish; an
+unresolved one fails the run and is flagged critically in the report.
 
 ## Running it
 
 Dispatch **DeepAudit** (`.github/workflows/audit.yaml`) with a `target` and the `authorized`
-checkbox. The optional **`notes`** input is free-text guidance the supervisor treats as
-authoritative for the run — e.g. "enumerate and audit every subdomain", "focus on the API",
-or scope constraints — and propagates to the workers it dispatches. Configure:
+checkbox. Configure:
 
 - Secret `LLM_API_KEY` (or `DEEPSEEK_API_KEY`); optional variables `LLM_BASE_URL`,
   `LLM_MODEL_FAST`, `LLM_MODEL_STRONG` (defaults target DeepSeek).

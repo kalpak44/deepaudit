@@ -47,6 +47,20 @@ class TargetScope(unittest.TestCase):
         with self.assertRaises(ValueError):
             assert_in_scope("evil.com", "https://example.com")
 
+    def test_scope_widens_subdomain_target_to_root_and_siblings(self):
+        # Given a subdomain as the target, the root domain and sibling subdomains are in scope too.
+        self.assertEqual(assert_in_scope("example.com", "https://shop.example.com"), "example.com")
+        self.assertEqual(assert_in_scope("api.example.com", "https://shop.example.com"), "api.example.com")
+        with self.assertRaises(ValueError):
+            assert_in_scope("evil.com", "https://shop.example.com")
+
+    def test_registrable_domain_handles_multi_label_suffixes(self):
+        from lib.target import registrable_domain
+        self.assertEqual(registrable_domain("shop.example.com"), "example.com")
+        self.assertEqual(registrable_domain("example.com"), "example.com")
+        self.assertEqual(registrable_domain("shop.example.co.uk"), "example.co.uk")
+        self.assertEqual(registrable_domain("203.0.113.5"), "203.0.113.5")
+
 
 class Grounding(unittest.TestCase):
     def setUp(self):
@@ -70,6 +84,34 @@ class Grounding(unittest.TestCase):
             validate_finding({"title": "t", "summary": "s", "remediation": "r",
                               "evidence_id": self.eid, "quote": "nginx/1.18.0",
                               "severity": "apocalyptic"}, self.ev)
+
+    def test_accepts_grounded_poc(self):
+        poc_eid = self.ev.add("run:curl", {"stdout": "X-Reflected: <script>alert(1)</script>"})
+        rec = validate_finding({"title": "t", "summary": "s", "remediation": "r",
+                                "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
+                                "reproduction": "curl with payload", "poc_evidence_id": poc_eid,
+                                "poc_quote": "X-Reflected: <script>alert(1)</script>"}, self.ev)
+        self.assertTrue(rec["poc_verified"])
+        self.assertEqual(rec["poc_evidence_id"], poc_eid)
+
+    def test_rejects_ungrounded_poc_quote(self):
+        poc_eid = self.ev.add("run:curl", {"stdout": "HTTP/1.1 200 OK"})
+        with self.assertRaises(ValueError):
+            validate_finding({"title": "t", "summary": "s", "remediation": "r",
+                              "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
+                              "poc_evidence_id": poc_eid, "poc_quote": "not present anywhere"}, self.ev)
+
+    def test_rejects_partial_poc_fields(self):
+        with self.assertRaises(ValueError):
+            validate_finding({"title": "t", "summary": "s", "remediation": "r",
+                              "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
+                              "poc_evidence_id": "e001"}, self.ev)
+
+    def test_unverified_reproduction_flagged(self):
+        rec = validate_finding({"title": "t", "summary": "s", "remediation": "r",
+                                "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
+                                "reproduction": "did it manually"}, self.ev)
+        self.assertFalse(rec["poc_verified"])
 
 
 def make_worker_result():
@@ -184,6 +226,106 @@ class HypothesesAndPlaybooks(unittest.TestCase):
         self.assertIn("SPA", playbooks.get("react"))          # alias react -> react-spa
         self.assertIn("Available", playbooks.get("nonexistent"))
 
+    def test_safe_poc_recipes(self):
+        from lib import playbooks
+        self.assertIn("poc", playbooks.names())
+        for name in ("sql-injection", "xss", "ssrf", "idor", "command-injection",
+                     "path-traversal", "deserialization", "secrets-exposure",
+                     "log4shell", "ssti", "xxe", "ldap-injection", "jwt"):
+            self.assertIn(name, playbooks.names())
+            recipe = playbooks.get(name).lower()
+            self.assertTrue("never" in recipe or "don't" in recipe or "do not" in recipe)
+        self.assertIn("SLEEP(5)", playbooks.get("sqli"))              # alias -> sql-injection
+        self.assertIn("reverse shell", playbooks.get("rce").lower())  # alias -> command-injection
+        self.assertIn("Read, don't write", playbooks.get("safe-poc"))  # alias -> poc
+        self.assertIn("collaborator", playbooks.get("log4j").lower())  # alias -> log4shell
+
+    def test_system_playbooks(self):
+        from lib import playbooks
+        for name in ("apache-tomcat", "jenkins", "elastic", "exposed-databases",
+                     "container-orchestration", "atlassian", "spring", "grafana", "php"):
+            self.assertIn(name, playbooks.names())
+        self.assertIn("manager", playbooks.get("tomcat").lower())        # alias -> apache-tomcat
+        self.assertIn("actuator", playbooks.get("spring-boot").lower())  # alias -> spring
+        self.assertIn("redis", playbooks.get("exposed-databases").lower())
+
+
+class ResourceInventory(unittest.TestCase):
+    def test_add_update_dedupe(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        rid = state.add_resource("supervisor", "subdomain", "api.example.com")["id"]
+        dup = state.add_resource("supervisor", "subdomain", "api.example.com")
+        self.assertTrue(dup["duplicate"])
+        state.update_resource({"id": rid, "status": "tested", "evidence_id": "e001"})
+        self.assertEqual(state.resources[0]["status"], "tested")
+        self.assertIn("e001", state.resources[0]["evidence_ids"])
+
+    def test_import_from_worker(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        imported = state.import_worker({"status": "ok", "findings": [], "resources": [
+            {"kind": "endpoint", "name": "/admin", "status": "tested", "detail": "checked auth"}]},
+            focus="content")
+        self.assertEqual(imported, 0)
+        self.assertEqual(len(state.resources), 1)
+        self.assertEqual(state.resources[0]["status"], "tested")
+
+
+class DangerousMode(unittest.TestCase):
+    def test_tools_only_exposed_when_dangerous(self):
+        safe = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        self.assertNotIn("begin_mutation", safe.common_tools("supervisor"))
+        dangerous = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console(), dangerous=True)
+        tools = dangerous.common_tools("supervisor")
+        self.assertIn("begin_mutation", tools)
+        self.assertIn("confirm_revert", tools)
+        self.assertIn("list_mutations", tools)
+
+    def test_finding_rejects_unreverted_mutation(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console(), dangerous=True)
+        eid = state.add_evidence("probe", {"before": "0"})
+        mid = state.begin_mutation("supervisor", "flip debug flag to true",
+                                   "flip debug flag back to false")["id"]
+        result = state.record_finding({"title": "t", "summary": "s", "remediation": "r",
+                                       "evidence_id": eid, "quote": '"before": "0"',
+                                       "severity": "medium", "mutation_id": mid}, who="supervisor")
+        self.assertIn("error", result)
+
+        proof_eid = state.add_evidence("probe", {"after": "reverted"})
+        confirm = state.confirm_revert({"id": mid, "evidence_id": proof_eid})
+        self.assertEqual(confirm["status"], "reverted")
+
+        result2 = state.record_finding({"title": "t", "summary": "s", "remediation": "r",
+                                        "evidence_id": eid, "quote": '"before": "0"',
+                                        "severity": "medium", "mutation_id": mid}, who="supervisor")
+        self.assertTrue(result2["accepted"])
+        self.assertEqual(state.findings[0]["mutation_id"], mid)
+
+    def test_failed_revert_tracked_as_critical(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console(), dangerous=True)
+        mid = state.begin_mutation("supervisor", "create test user", "delete test user")["id"]
+        eid = state.add_evidence("probe", {"delete_attempt": "failed: 500"})
+        state.confirm_revert({"id": mid, "evidence_id": eid, "success": False,
+                              "note": "delete endpoint returned 500; user 'qa_test_42' still exists"})
+        self.assertEqual(state.mutations[0]["status"], "revert_failed")
+        self.assertEqual(state.pending_mutations(), [])  # resolved (as failed), not stuck pending
+
+    def test_worker_blocks_completion_until_reverted(self):
+        script = [
+            call("begin_mutation", description="create a test record via the API",
+                 revert_plan="DELETE the created record by id"),
+            call("complete_session", summary="done"),  # should be rejected: still pending_revert
+            call("add_evidence", source="api", data={"deleted": True, "id": 42}),
+            call("confirm_revert", id="M001", evidence_id="e001"),
+            call("complete_session", summary="created and reverted a test record to confirm IDOR"),
+        ]
+        root = Path(tempfile.mkdtemp()) / "worker-dangerous"
+        root.mkdir(parents=True)
+        result = run_worker(target="https://example.com/", task="confirm idor", focus="idor",
+                            run_root=root, client=FakeClient(script), console=Console(), dangerous=True)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(result["mutations"]), 1)
+        self.assertEqual(result["mutations"][0]["status"], "reverted")
+
 
 class Reporting(unittest.TestCase):
     def test_escapes_and_prioritizes(self):
@@ -195,14 +337,42 @@ class Reporting(unittest.TestCase):
                 {"id": "F001", "title": "b <script>", "severity": "low", "verification": "supported",
                  "evidence_id": "e2", "quote": "x", "summary": "s", "remediation": "r"},
                 {"id": "F002", "title": "a", "severity": "critical", "verification": "supported",
-                 "evidence_id": "e1", "quote": "y", "summary": "s", "remediation": "r", "kev": True},
+                 "evidence_id": "e1", "quote": "y", "summary": "s", "remediation": "r", "kev": True,
+                 "reproduction": "curl ...", "poc_evidence_id": "e3", "poc_quote": "pwned",
+                 "poc_verified": True},
             ],
+            "resources": [{"id": "R001", "kind": "subdomain", "name": "api.example.com",
+                          "status": "tested", "detail": ""}],
         }
         html = report.html_page(result)
         self.assertIn("&lt;script&gt;", html)
         self.assertNotIn("<script>", html.split("<title>")[1])
+        self.assertIn("Resources audited", html)
+        self.assertIn("PoC verified", html)
         md = report.markdown(result)
         self.assertIn("KEV", md)
+        self.assertIn("Resources audited", md)
+        self.assertIn("PoC verified", md)
+        self.assertIn("PoC output", md)
+
+    def test_dangerous_mode_and_unresolved_mutation_banner(self):
+        result = {
+            "target": "https://example.com/", "run_id": "audit-2", "status": "complete",
+            "dangerous": True, "summary": "s", "limitations": "l", "evidence_count": 1,
+            "usage": {}, "agent": {}, "workers": [], "rejected": [], "findings": [],
+            "mutations": [{"id": "M001", "description": "created a test user",
+                          "revert_plan": "delete the test user", "status": "revert_failed",
+                          "note": "delete endpoint returned 500"}],
+        }
+        md = report.markdown(result)
+        self.assertIn("DANGEROUS MODE", md)
+        self.assertIn("CRITICAL", md)
+        self.assertIn("State changes", md)
+        self.assertIn("revert_failed", md)
+        html = report.html_page(result)
+        self.assertIn("DANGEROUS MODE", html)
+        self.assertIn("CRITICAL", html)
+        self.assertIn("State changes", html)
 
 
 if __name__ == "__main__":

@@ -26,10 +26,10 @@ WORKFLOW = "audit.yaml"
 
 class Dispatcher:
     def __init__(self, *, repo: str, ref: str, target: str, run_root: Path, console,
-                 poll=12, timeout=3000, max_workers=8, concurrency=6,
+                 poll=12, timeout=3000, max_workers=8, concurrency=6, dangerous=False,
                  sleep=time.sleep, now=time.monotonic):
         self.repo, self.ref, self.target = repo, ref, target
-        self.run_root, self.console = run_root, console
+        self.run_root, self.console, self.dangerous = run_root, console, dangerous
         self.poll, self.timeout, self.max_workers = poll, timeout, max_workers
         self.sleep, self.now = sleep, now
         self.records: dict[str, dict] = {}   # task_id -> {task_id, focus, status, run_id, url}
@@ -94,7 +94,8 @@ class Dispatcher:
                 self._gh(["workflow", "run", WORKFLOW, "--repo", self.repo, "--ref", self.ref,
                           "-f", "mode=worker", "-f", f"target={self.target}",
                           "-f", f"task_id={task_id}", "-f", f"task={task}",
-                          "-f", f"focus={focus}", "-f", f"run_name={run_name}"])
+                          "-f", f"focus={focus}", "-f", f"run_name={run_name}",
+                          "-f", f"dangerous={'true' if self.dangerous else 'false'}"])
                 run_id = self._await_run(run_name, deadline)
                 record["run_id"] = run_id
                 record["url"] = f"https://github.com/{self.repo}/actions/runs/{run_id}"
@@ -153,7 +154,7 @@ class Dispatcher:
             path = next(Path(tmp).rglob("worker.json"), None)
             if path is None:
                 return {"summary": "worker produced no artifact", "findings": [],
-                        "evidence": [], "notes": []}
+                        "evidence": [], "notes": [], "resources": [], "mutations": []}
             payload = json.loads(path.read_text(encoding="utf-8")[:4_000_000])
             saved = self.run_root / "workers" / f"{task_id}.json"
             saved.parent.mkdir(parents=True, exist_ok=True)
@@ -162,4 +163,6 @@ class Dispatcher:
                     "notes": [str(n)[:600] for n in (payload.get("notes") or [])][:20],
                     "findings": payload.get("findings", [])[:40],
                     "evidence": payload.get("evidence", [])[:60],
+                    "resources": payload.get("resources", [])[:500],
+                    "mutations": payload.get("mutations", [])[:50],
                     "url": f"https://github.com/{self.repo}/actions/runs/{run_id}"}

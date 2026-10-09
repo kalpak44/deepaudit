@@ -16,11 +16,14 @@ on:
         required: true
         default: false
         type: boolean
-      notes:
-        description: Optional guidance for this scan (scope emphasis, subdomains, focus, constraints)
+      dangerous:
+        description: >-
+          Allow PoCs that change target state to confirm exploitability (e.g. Tomcat manager
+          deploy, DB writes). The agent must fully revert every change before finishing; use only
+          when non-destructive confirmation genuinely isn't possible.
         required: false
-        default: ''
-        type: string
+        default: false
+        type: boolean
       mode:
         description: supervisor (entrypoint) or worker (dispatched by the supervisor)
         required: false
@@ -87,7 +90,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          NOTES: ${{ inputs.notes }}
+          DANGEROUS: ${{ inputs.dangerous }}
         run: python -m lib.supervisor --target "$TARGET"
 
       - name: Worker subtask
@@ -96,6 +99,7 @@ jobs:
           TASK: ${{ inputs.task }}
           FOCUS: ${{ inputs.focus }}
           TASK_ID: ${{ inputs.task_id }}
+          DANGEROUS: ${{ inputs.dangerous }}
         run: python -m lib.worker --target "$TARGET" --task-id "$TASK_ID"
 
       - name: Upload worker result

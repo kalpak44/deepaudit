@@ -52,25 +52,44 @@ FINDING = {"type": "object", "properties": {
     "cve": STRING, "cvss": {"type": "number"}, "epss": {"type": "number"},
     "kev": {"type": "boolean"},
     "impact": STRING,
-    "reproduction": {"type": "string", "description": "Optional non-destructive repro grounded in evidence."}},
+    "reproduction": {"type": "string", "description": "Human-readable repro narrative/steps. "
+        "Unverified prose unless poc_evidence_id/poc_quote are also given."},
+    "poc_evidence_id": {"type": "string", "description": "Id of the evidence item holding the "
+        "RAW captured output of actually executing the reproduction via `run` (not a description "
+        "of it). Required, with poc_quote, for a PoC to show as verified in the report."},
+    "poc_quote": {"type": "string", "description": "Exact 8..2000 char excerpt of poc_evidence_id "
+        "proving the PoC ran and what it returned (e.g. the reflected payload, leaked value, "
+        "command output)."},
+    "mutation_id": {"type": "string", "description": "Dangerous mode only: id from begin_mutation "
+        "if this PoC required a state-changing action. Only accepted once confirm_revert has "
+        "marked that mutation 'reverted'."}},
     "required": ["title", "summary", "remediation", "severity", "evidence_id", "quote"]}
 
-FINDING_SCHEMA = schema("Record one confirmed, evidence-grounded finding.",
+FINDING_SCHEMA = schema("Record one confirmed, evidence-grounded finding. For exploitable "
+                        "findings, actually run the non-destructive PoC via `run`, save its raw "
+                        "output with `add_evidence`, and cite it as poc_evidence_id/poc_quote — "
+                        "a narrated `reproduction` alone is reported as unverified.",
                         FINDING["properties"], FINDING["required"])
+
+RESOURCE_STATUSES = ("discovered", "testing", "tested", "skipped")
+MUTATION_STATUSES = ("pending_revert", "reverted", "revert_failed")
 
 
 class AuditState:
     """Everything a running audit accumulates. Thread-safe for parallel fan-out."""
 
-    def __init__(self, target: str, run_root: Path, console):
+    def __init__(self, target: str, run_root: Path, console, *, dangerous: bool = False):
         self.target = target
         self.run_root = run_root
         self.console = console
+        self.dangerous = dangerous
         self.evidence = Evidence(run_root)
         self.runner = Runner(target, console)
         self.findings: list[dict] = []
         self.notes: list[dict] = []
         self.hypotheses: list[dict] = []
+        self.resources: list[dict] = []
+        self.mutations: list[dict] = []
         self.plan: dict = {}
         self._lock = threading.RLock()
 
@@ -79,6 +98,12 @@ class AuditState:
         return self.evidence.add(source, payload, task=task)
 
     def record_finding(self, entry: dict, *, who: str) -> dict:
+        mutation_id = entry.get("mutation_id")
+        if mutation_id is not None:
+            mutation = next((m for m in self.mutations if m["id"] == mutation_id), None)
+            if mutation is None or mutation["status"] != "reverted":
+                return {"error": "mutation_id must reference a mutation already confirm_reverted "
+                        "(status=reverted) — revert the state change before citing it on a finding"}
         try:
             record = validate_finding(entry, self.evidence)
         except ValueError as exc:
@@ -90,6 +115,8 @@ class AuditState:
                               if f["title"] == record["title"] and f["evidence_id"] == record["evidence_id"]), None)
             if duplicate:
                 return {"accepted": True, "id": duplicate["id"], "duplicate": True}
+            if mutation_id:
+                record["mutation_id"] = mutation_id
             record.update(id=f"F{len(self.findings) + 1:03d}", reporter=who)
             self.findings.append(record)
             self.save()
@@ -137,6 +164,82 @@ class AuditState:
         self.console.event("HYPOTHESIS", hyp["id"], status=status)
         return {"accepted": True, "id": hyp["id"], "status": status}
 
+    # -- resource inventory (what was actually found and covered) --------------
+    def add_resource(self, who: str, kind: str, name: str, *, detail: str = "") -> dict:
+        if not isinstance(kind, str) or not kind.strip() or not isinstance(name, str) or not name.strip():
+            return {"error": "kind and name are required (e.g. kind=subdomain, name=api.example.com)"}
+        with self._lock:
+            if len(self.resources) >= 500:
+                return {"error": "resource budget exhausted"}
+            duplicate = next((r for r in self.resources
+                              if r["kind"] == kind.strip()[:60] and r["name"] == name.strip()[:300]), None)
+            if duplicate:
+                return {"accepted": True, "id": duplicate["id"], "duplicate": True}
+            rid = f"R{len(self.resources) + 1:03d}"
+            self.resources.append({"id": rid, "kind": kind.strip()[:60], "name": name.strip()[:300],
+                                   "status": "discovered", "detail": str(detail)[:500],
+                                   "evidence_ids": [], "by": who})
+            self.save()
+        self.console.event("RESOURCE", rid, resource_kind=kind[:60], name=name[:120])
+        return {"accepted": True, "id": rid}
+
+    def update_resource(self, args: dict) -> dict:
+        res = next((r for r in self.resources if r["id"] == args.get("id")), None)
+        status = args.get("status")
+        if res is None or status not in RESOURCE_STATUSES:
+            return {"error": f"provide an existing resource id and status {RESOURCE_STATUSES}"}
+        with self._lock:
+            res["status"] = status
+            if isinstance(args.get("detail"), str):
+                res["detail"] = args["detail"][:500]
+            eid = args.get("evidence_id")
+            if isinstance(eid, str) and eid and eid not in res["evidence_ids"]:
+                res["evidence_ids"].append(eid)
+            self.save()
+        self.console.event("RESOURCE", res["id"], status=status)
+        return {"accepted": True, "id": res["id"], "status": status}
+
+    # -- mutations (dangerous-mode state changes, must be declared and reverted) -
+    def begin_mutation(self, who: str, description: str, revert_plan: str) -> dict:
+        if not isinstance(description, str) or not 4 <= len(description) <= 1000:
+            return {"error": "description must be 4..1000 chars: exactly what you are about to change"}
+        if not isinstance(revert_plan, str) or not 4 <= len(revert_plan) <= 1000:
+            return {"error": "revert_plan must be 4..1000 chars: exactly how you will undo it"}
+        with self._lock:
+            if len(self.mutations) >= 50:
+                return {"error": "mutation budget exhausted"}
+            mid = f"M{len(self.mutations) + 1:03d}"
+            self.mutations.append({"id": mid, "description": description.strip()[:1000],
+                                   "revert_plan": revert_plan.strip()[:1000], "status": "pending_revert",
+                                   "revert_evidence_id": None, "note": "", "by": who})
+            self.save()
+        self.console.event("MUTATION", mid, status="pending_revert")
+        return {"accepted": True, "id": mid,
+                "note": "Make the minimal change now, add_evidence proof it worked, revert it "
+                        "immediately, then call confirm_revert with evidence of the revert before "
+                        "you can cite this mutation_id on a finding or finish/complete_session."}
+
+    def confirm_revert(self, args: dict) -> dict:
+        mutation = next((m for m in self.mutations if m["id"] == args.get("id")), None)
+        if mutation is None:
+            return {"error": "unknown mutation id"}
+        evidence_id = args.get("evidence_id")
+        if not isinstance(evidence_id, str) or not evidence_id.strip():
+            return {"error": "evidence_id is required: proof the revert actually happened, not "
+                    "just a claim that it did"}
+        success = args.get("success", True) is not False
+        with self._lock:
+            mutation["revert_evidence_id"] = evidence_id
+            mutation["status"] = "reverted" if success else "revert_failed"
+            if isinstance(args.get("note"), str):
+                mutation["note"] = args["note"][:1000]
+            self.save()
+        self.console.event("MUTATION", mutation["id"], status=mutation["status"])
+        return {"accepted": True, "id": mutation["id"], "status": mutation["status"]}
+
+    def pending_mutations(self) -> list[str]:
+        return [m["id"] for m in self.mutations if m["status"] == "pending_revert"]
+
     def record_plan(self, args: dict) -> dict:
         plan = {k: args.get(k) for k in ("objective", "surfaces", "waves", "stop_criteria") if k in args}
         if not plan:
@@ -154,28 +257,47 @@ class AuditState:
             if isinstance(item, dict) and "id" in item:
                 remap[item["id"]] = self.add_evidence(
                     item.get("source", f"worker:{focus}"), item.get("payload"), task=focus)
+        mutation_remap = {}
+        for m in worker_result.get("mutations", []) or []:
+            if isinstance(m, dict) and m.get("id"):
+                with self._lock:
+                    new_id = f"M{len(self.mutations) + 1:03d}"
+                    self.mutations.append({**m, "id": new_id, "by": m.get("by", f"worker:{focus}")})
+                    self.save()
+                mutation_remap[m["id"]] = new_id
         imported = 0
         for finding in worker_result.get("findings", []) or []:
             if not isinstance(finding, dict):
                 continue
             entry = dict(finding)
             entry["evidence_id"] = remap.get(finding.get("evidence_id"), finding.get("evidence_id"))
+            if entry.get("poc_evidence_id"):
+                entry["poc_evidence_id"] = remap.get(entry["poc_evidence_id"], entry["poc_evidence_id"])
+            if entry.get("mutation_id"):
+                entry["mutation_id"] = mutation_remap.get(entry["mutation_id"], entry["mutation_id"])
             if self.record_finding(entry, who=f"worker:{focus}").get("accepted"):
                 imported += 1
         for message in worker_result.get("notes", []) or []:
             self.note(f"worker:{focus}", str(message)[:2000])
+        for res in worker_result.get("resources", []) or []:
+            if isinstance(res, dict) and res.get("kind") and res.get("name"):
+                imported_id = self.add_resource(f"worker:{focus}", str(res["kind"]), str(res["name"]),
+                                                detail=str(res.get("detail", ""))).get("id")
+                if imported_id and res.get("status") in RESOURCE_STATUSES and res["status"] != "discovered":
+                    self.update_resource({"id": imported_id, "status": res["status"]})
         return imported
 
     # -- persistence -----------------------------------------------------------
     def save(self):
         for name, data in (("findings", self.findings), ("notes", self.notes),
-                           ("hypotheses", self.hypotheses), ("plan", self.plan)):
+                           ("hypotheses", self.hypotheses), ("resources", self.resources),
+                           ("mutations", self.mutations), ("plan", self.plan)):
             (self.run_root / f"{name}.json").write_text(
                 json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
 
     # -- common tool surface ---------------------------------------------------
     def common_tools(self, who: str) -> dict:
-        return {
+        tools = {
             "run": (RUN_SCHEMA, self.runner.run),
             "cve_lookup": (CVE_SCHEMA, lambda a: self._cve(a)),
             "add_evidence": (schema(
@@ -208,13 +330,56 @@ class AuditState:
                  "note": STRING, "evidence_id": STRING}, ("id", "status")), self.update_hypothesis),
             "list_hypotheses": (schema("List the hypothesis ledger with statuses."),
                 lambda _: {"hypotheses": self.hypotheses}),
+            "add_resource": (schema(
+                "Register a discovered asset in the resource inventory (subdomain, endpoint, "
+                "service, open port, technology/CMS, API route, file, etc.). Do this as you find "
+                "things during recon/content-discovery, BEFORE you decide whether to test them — "
+                "it is how coverage gets tracked and reported, independent of whether a finding "
+                "ever comes from it.",
+                {"kind": STRING, "name": STRING, "detail": STRING}, ("kind", "name")),
+                lambda a: self.add_resource(who, a.get("kind", ""), a.get("name", ""), detail=a.get("detail", ""))),
+            "update_resource": (schema(
+                "Advance a resource's status as you cover it: discovered -> testing -> "
+                "tested|skipped. Attach the evidence_id that shows what you did with it.",
+                {"id": STRING, "status": {"type": "string", "enum": list(RESOURCE_STATUSES)},
+                 "detail": STRING, "evidence_id": STRING}, ("id", "status")), self.update_resource),
+            "list_resources": (schema("List the resource inventory with coverage status."),
+                lambda _: {"resources": self.resources}),
             "playbook": (schema(
-                "Get a concrete testing playbook for a detected technology/surface "
-                "(e.g. wordpress, react-spa, graphql, rest-api, oauth, s3, tls, headers).",
+                "Get a concrete testing playbook: either for a detected technology/system "
+                "(e.g. wordpress, react-spa, graphql, rest-api, oauth, s3, tls, headers, "
+                "apache-tomcat, jenkins, elastic, exposed-databases, container-orchestration, "
+                "atlassian, spring, grafana, php), or a safe non-destructive PoC recipe for a "
+                "vuln class/CVE you're hypothesizing about (e.g. poc, sql-injection, xss, ssrf, "
+                "idor, command-injection, path-traversal, deserialization, secrets-exposure, "
+                "log4shell, ssti, xxe, ldap-injection, jwt). The response includes the full "
+                "`available` list — call with any name (or an unknown one) to see it. Always "
+                "call the matching vuln-class one before you execute a PoC, to confirm impact "
+                "the safe way.",
                 {"name": STRING}, ("name",)),
                 lambda a: {"name": a.get("name"), "playbook": playbooks.get(a.get("name", "")),
                            "available": playbooks.names()}),
         }
+        if self.dangerous:
+            tools.update({
+                "begin_mutation": (schema(
+                    "DANGEROUS MODE: declare a state-changing action you are about to take "
+                    "against the target, and exactly how you will undo it, BEFORE you do it. "
+                    "Required before any such change; a finding may not cite it until reverted.",
+                    {"description": STRING, "revert_plan": STRING},
+                    ("description", "revert_plan")),
+                    lambda a: self.begin_mutation(who, a.get("description", ""), a.get("revert_plan", ""))),
+                "confirm_revert": (schema(
+                    "DANGEROUS MODE: confirm a declared mutation has been undone, citing "
+                    "evidence that proves it (not just a claim). Pass success=false with a note "
+                    "if it could not be fully reverted — reported as a critical unresolved item.",
+                    {"id": STRING, "evidence_id": STRING,
+                     "success": {"type": "boolean", "default": True}, "note": STRING},
+                    ("id", "evidence_id")), self.confirm_revert),
+                "list_mutations": (schema("List declared state changes and their revert status."),
+                    lambda _: {"mutations": self.mutations}),
+            })
+        return tools
 
     def _cve(self, args: dict) -> dict:
         packages = args.get("packages")

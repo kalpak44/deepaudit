@@ -24,9 +24,10 @@ SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 
 def run_audit(*, target, repo, ref, run_root, client, console,
-              enable_dispatch=True, max_steps=60, notes="") -> dict:
-    state = AuditState(target, run_root, console)
-    dispatcher = Dispatcher(repo=repo, ref=ref, target=target, run_root=run_root, console=console)
+              enable_dispatch=True, max_steps=60, dangerous=False) -> dict:
+    state = AuditState(target, run_root, console, dangerous=dangerous)
+    dispatcher = Dispatcher(repo=repo, ref=ref, target=target, run_root=run_root, console=console,
+                            dangerous=dangerous)
     captured: dict = {}
 
     gathered: set[str] = set()
@@ -56,11 +57,16 @@ def run_audit(*, target, repo, ref, run_root, client, console,
         return {"results": _ingest(dispatcher.gather(args)["gathered"])}
 
     def run_verifier(_args: dict) -> dict:
-        return verify.run_verifier(state, client, log=lambda m: console.agent("verifier", m))
+        return verify.run_verifier(state, client, dangerous=dangerous,
+                                   log=lambda m: console.agent("verifier", m))
 
     def finish(args: dict) -> dict:
         if enable_dispatch and dispatcher.pending():
             _ingest(dispatcher.gather({})["gathered"])  # never lose a still-running worker
+        pending_mutations = state.pending_mutations()
+        if pending_mutations:
+            return {"error": "revert all state changes first (confirm_revert) before finishing",
+                    "pending_mutations": pending_mutations}
         unreviewed = [f["id"] for f in state.findings if f.get("verification") == "unreviewed"]
         if unreviewed:
             return {"error": "run_verifier first: findings still unreviewed "
@@ -101,16 +107,16 @@ def run_audit(*, target, repo, ref, run_root, client, console,
             {"summary": STRING, "limitations": STRING}, ("summary",)), finish),
     })
 
-    notes = str(notes or "").strip()[:4000]
-    operator = (f"\n\nOPERATOR NOTES for this run (authoritative guidance — honor within scope; "
-                f"propagate relevant constraints to any workers you dispatch):\n{notes}\n"
-                if notes else "")
-    task = (f"Audit this authorized target end to end: {target}"
-            + operator +
-            "\n\nPlan from the checklist, recon and fingerprint first, then go deep. Look up CVEs on "
+    task = (f"Audit this authorized target end to end: {target}\n\n"
+            "This is a FULL scan: no scope narrowing, no partial coverage by default. If the "
+            "target given is a specific subdomain, that does not limit you to it — enumerate and "
+            "cover its registrable root domain AND every subdomain of that root you can "
+            "discover, not just the host named in the target. Treat the whole domain footprint "
+            "as in scope.\n\n"
+            "Plan from the checklist, recon and fingerprint first, then go deep. Look up CVEs on "
             "every version you find. Fan out independent work to workers. Record grounded findings, "
             "run the verifier, then finish with a prioritized report.")
-    outcome = agent_loop(client, prompts.SUPERVISOR, task, tools, tier=STRONG,
+    outcome = agent_loop(client, prompts.supervisor_prompt(dangerous), task, tools, tier=STRONG,
                          max_steps=max_steps, require_terminal=True, terminal_tools=("finish",),
                          log=lambda m: console.agent("supervisor", m))
 
@@ -121,6 +127,7 @@ def run_audit(*, target, repo, ref, run_root, client, console,
     return {
         "target": target, "run_id": run_root.name,
         "status": "complete" if complete else "incomplete",
+        "dangerous": dangerous,
         "summary": captured.get("summary") or "The audit ended before a report was synthesized; "
                    "the evidence and findings collected so far are included.",
         "limitations": captured.get("limitations", ""),
@@ -129,6 +136,8 @@ def run_audit(*, target, repo, ref, run_root, client, console,
         "notes": state.notes,
         "plan": state.plan,
         "hypotheses": state.hypotheses,
+        "resources": state.resources,
+        "mutations": state.mutations,
         "workers": list(dispatcher.records.values()),
         "evidence_count": len(state.evidence.index()),
         "usage": getattr(client, "usage", {}),
@@ -143,18 +152,21 @@ def main(argv=None) -> int:
     parser.add_argument("--ref", default=os.getenv("GITHUB_REF_NAME", "main"))
     parser.add_argument("--run-id", default=os.getenv("GITHUB_RUN_ID", "local"))
     parser.add_argument("--out-dir", default="audits")
-    parser.add_argument("--notes", default=os.getenv("NOTES", ""))
+    parser.add_argument("--dangerous", default=os.getenv("DANGEROUS", ""))
     args = parser.parse_args(argv)
     try:
         target = target_url(args.target)
     except ValueError as exc:
         parser.error(str(exc))
+    dangerous = str(args.dangerous).strip().lower() in ("1", "true", "yes", "on")
 
     run_root = Path(args.out_dir) / f"audit-{args.run_id}"
     run_root.mkdir(parents=True, exist_ok=True)
     console = Console(run_root / "events.jsonl")
-    console.event("AUDIT", "started", target=target, repo=args.repo,
-                  notes=(args.notes[:120] + "…") if len(args.notes) > 120 else args.notes)
+    console.event("AUDIT", "started", target=target, repo=args.repo, dangerous=dangerous)
+    if dangerous:
+        console.event("AUDIT", "DANGEROUS MODE ON — reversible state-changing PoCs are permitted "
+                      "and must be reverted before the run can finish")
     client = LLMClient()
     enable_dispatch = bool(args.repo) and bool(os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN"))
     if not enable_dispatch:
@@ -162,7 +174,7 @@ def main(argv=None) -> int:
 
     result = run_audit(target=target, repo=args.repo, ref=args.ref, run_root=run_root,
                        client=client, console=console, enable_dispatch=enable_dispatch,
-                       notes=args.notes)
+                       dangerous=dangerous)
 
     (run_root / "report.json").write_text(json.dumps(result, ensure_ascii=True, indent=2), encoding="utf-8")
     (run_root / "report.html").write_text(report_render.html_page(result), encoding="utf-8")
@@ -174,7 +186,11 @@ def main(argv=None) -> int:
             stream.write(summary_md + "\n")
     console.event("AUDIT", result["status"], findings=len(result["findings"]),
                   evidence=result["evidence_count"], workers=len(result["workers"]))
-    return 0 if result["status"] == "complete" else 1
+    unresolved = [m for m in result.get("mutations", []) if m.get("status") == "revert_failed"]
+    if unresolved:
+        console.event("AUDIT", "CRITICAL: state changes left unreverted on the target — manual "
+                      "cleanup required", mutations=[m["id"] for m in unresolved])
+    return 0 if result["status"] == "complete" and not unresolved else 1
 
 
 if __name__ == "__main__":

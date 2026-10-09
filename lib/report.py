@@ -79,6 +79,14 @@ def markdown(result: dict) -> str:
             lines.append(f"| {r.get('id')} | {_mdq(r.get('kind'))} | {_mdq(r.get('name'))} | "
                          f"{r.get('status')} | {_mdq(r.get('detail'))} |")
         lines.append("")
+    components = result.get("components") or []
+    if components:
+        lines += ["### Software inventory & CVE status", "",
+                  "| ID | Component | Version | CVE status | Source |", "|---|---|---|---|---|"]
+        for c in components:
+            lines.append(f"| {c.get('id')} | {_mdq(c.get('name'))} | {_mdq(c.get('version'))} | "
+                         f"{c.get('cve_status', 'unchecked')} | {_mdq(c.get('source'))} |")
+        lines.append("")
     if mutations:
         lines += ["### State changes (dangerous mode)", "",
                   "Every PoC that changed target state, declared and reverted. `revert_failed` "
@@ -101,7 +109,10 @@ def markdown(result: dict) -> str:
                 tags.append(str(finding["cve"]))
             if finding.get("epss"):
                 tags.append(f"EPSS {float(finding['epss']):.2f}")
-            if finding.get("poc_verified"):
+            if finding.get("poc_differential"):
+                method = finding.get("poc_method", "differential")
+                tags.append(f"✅ PoC verified ({method})")
+            elif finding.get("poc_verified"):
                 tags.append("✅ PoC verified")
             elif "poc_verified" in finding:
                 tags.append("⚠️ PoC unverified")
@@ -120,9 +131,16 @@ def markdown(result: dict) -> str:
                          if finding.get("poc_verified") else
                          "Reproduction (narrated by the agent, not independently captured)")
                 lines.append(f"\n**{label}:**\n\n```\n{_fence(finding['reproduction'])}\n```\n")
+            if finding.get("poc_baseline_evidence_id"):
+                lines.append(f"\n**Baseline / control** (`{finding.get('poc_baseline_evidence_id')}`) — "
+                             f"the same request/command WITHOUT the payload:\n\n"
+                             f"```\n{_fence(finding.get('poc_baseline_quote', ''))}\n```\n")
             if finding.get("poc_evidence_id"):
-                lines.append(f"\n**PoC output** (`{finding.get('poc_evidence_id')}`) — raw result of "
-                             f"actually running the PoC:\n\n```\n{_fence(finding.get('poc_quote', ''))}\n```\n")
+                label = ("PoC output (with payload) — compare against the baseline above"
+                         if finding.get("poc_differential") else
+                         "PoC output — raw result of actually running the PoC")
+                lines.append(f"\n**{label}** (`{finding.get('poc_evidence_id')}`):\n\n"
+                             f"```\n{_fence(finding.get('poc_quote', ''))}\n```\n")
             lines.append(f"\n**Evidence** (`{finding.get('evidence_id')}`):\n\n```\n{_fence(finding.get('quote', ''))}\n```\n")
             lines.append(f"\n**Remediation:** {_mdblock(finding.get('remediation', ''))}\n")
             if finding.get("verification_reason"):
@@ -174,7 +192,10 @@ def _finding_html(f: dict) -> str:
         tags.append(f'<span class="tag">EPSS {float(f["epss"]):.2f}</span>')
     if f.get("cvss"):
         tags.append(f'<span class="tag">CVSS {_e(f["cvss"])}</span>')
-    if f.get("poc_verified"):
+    if f.get("poc_differential"):
+        tags.append(f'<span class="tag" style="background:#15803d">✅ PoC verified '
+                    f'({_e(f.get("poc_method", "differential"))})</span>')
+    elif f.get("poc_verified"):
         tags.append('<span class="tag" style="background:#15803d">✅ PoC verified</span>')
     elif "poc_verified" in f:
         tags.append('<span class="tag" style="background:#92400e">⚠️ PoC unverified</span>')
@@ -196,9 +217,16 @@ def _finding_html(f: dict) -> str:
                  if f.get("poc_verified") else
                  "Reproduction (narrated by the agent, not independently captured):")
         parts.append(f'<p><b>{label}</b></p><pre><code>{_e(f["reproduction"])}</code></pre>')
+    if f.get("poc_baseline_evidence_id"):
+        parts.append(f'<p><b>Baseline / control</b> (<code>{_e(f["poc_baseline_evidence_id"])}</code>) '
+                     f'— the same request/command WITHOUT the payload:</p>'
+                     f'<pre><code>{_e(f.get("poc_baseline_quote"))}</code></pre>')
     if f.get("poc_evidence_id"):
-        parts.append(f'<p><b>PoC output</b> (<code>{_e(f["poc_evidence_id"])}</code>) — raw result of '
-                     f'actually running the PoC:</p><pre><code>{_e(f.get("poc_quote"))}</code></pre>')
+        poc_label = ("PoC output (with payload) — compare against the baseline above"
+                     if f.get("poc_differential") else
+                     "PoC output — raw result of actually running the PoC")
+        parts.append(f'<p><b>{poc_label}</b> (<code>{_e(f["poc_evidence_id"])}</code>):</p>'
+                     f'<pre><code>{_e(f.get("poc_quote"))}</code></pre>')
     parts.append(f'<p><b>Evidence:</b></p><pre><code>{_e(f.get("quote"))}</code></pre>')
     parts.append(f'<p><b>Remediation:</b> {_e(f.get("remediation"))}</p>')
     if f.get("verification_reason"):
@@ -239,6 +267,15 @@ def html_page(result: dict) -> str:
     res_html = (f'<h2>Resources audited ({len(resources)})</h2>'
                 f'<table><thead><tr><th>ID</th><th>Kind</th><th>Resource</th><th>Status</th>'
                 f'<th>Detail</th></tr></thead><tbody>{res_rows}</tbody></table>' if resources else "")
+    components = result.get("components") or []
+    comp_rows = "".join(
+        f'<tr><td><code>{_e(c.get("id"))}</code></td><td>{_e(c.get("name"))}</td>'
+        f'<td>{_e(c.get("version"))}</td><td>{_e(c.get("cve_status", "unchecked"))}</td>'
+        f'<td>{_e(c.get("source"))}</td></tr>' for c in components)
+    comp_html = (f'<h2>Software inventory &amp; CVE status ({len(components)})</h2>'
+                 f'<table><thead><tr><th>ID</th><th>Component</th><th>Version</th>'
+                 f'<th>CVE status</th><th>Source</th></tr></thead><tbody>{comp_rows}</tbody></table>'
+                 if components else "")
     mutations = result.get("mutations") or []
     unresolved = [m for m in mutations if m.get("status") == "revert_failed"]
     mut_rows = "".join(
@@ -292,6 +329,7 @@ footer{{color:#9ca3af;font-size:.8rem;margin-top:2rem;border-top:1px solid #e5e7
 {plan_html}
 {hyp_html}
 {res_html}
+{comp_html}
 {mut_html}
 <h2>Findings</h2>{body}
 <h2>Coverage &amp; limitations</h2><p>{_e(result.get('limitations') or 'Absence of a finding is not proof of absence of a problem.')}</p>

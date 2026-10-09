@@ -67,6 +67,13 @@ TOOLS = {
                "use": "SQL-injection detection and (authorized) exploitation. Use conservative "
                       "flags first (--batch --level 1 --risk 1); it is intrusive.",
                "install": ["sudo apt-get install -y -qq sqlmap"]},
+    "searchsploit": {"category": "exploit", "bin": "searchsploit",
+                     "use": "Offline Exploit-DB search/fetch: `searchsploit <product> <version>` to "
+                            "find public exploits, `searchsploit -m <id>` to pull the code to read "
+                            "and adapt. Pairs with exploit_lookup. Read before running.",
+                     "install": ["sudo apt-get install -y -qq exploitdb || "
+                                 "(sudo git clone --depth 1 -q https://gitlab.com/exploit-database/exploitdb "
+                                 "/opt/exploitdb && sudo ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit)"]},
     # ---- ports / network ---------------------------------------------------------
     "nmap": {"category": "network", "bin": "nmap",
              "use": "Port scan and service/version detection on the resolved address.",

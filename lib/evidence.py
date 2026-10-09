@@ -14,6 +14,9 @@ import threading
 from pathlib import Path
 
 SEVERITIES = ("info", "low", "medium", "high", "critical")
+# How a PoC proves impact. A differential/timing/out-of-band proof is far stronger than a single
+# observation, because it shows the payload CHANGING an observable signal versus a control.
+POC_METHODS = ("differential", "timing", "out_of_band", "direct")
 
 
 class Evidence:
@@ -107,6 +110,7 @@ def validate_finding(entry: dict, evidence: Evidence) -> dict:
         if entry.get(optional) not in (None, ""):
             record[optional] = entry[optional] if optional in ("cvss", "epss", "kev") else str(entry[optional])[:3000]
     poc_eid, poc_quote = entry.get("poc_evidence_id"), entry.get("poc_quote")
+    base_eid, base_quote = entry.get("poc_baseline_evidence_id"), entry.get("poc_baseline_quote")
     if poc_eid or poc_quote:
         if not (isinstance(poc_eid, str) and poc_eid.strip()
                 and isinstance(poc_quote, str) and 8 <= len(poc_quote) <= 2000):
@@ -117,6 +121,28 @@ def validate_finding(entry: dict, evidence: Evidence) -> dict:
                              "grounded in the real captured output of the `run` call that executed it")
         record["poc_evidence_id"], record["poc_quote"] = poc_eid, poc_quote[:2000]
         record["poc_verified"] = True
+        if entry.get("poc_method") in POC_METHODS:
+            record["poc_method"] = entry["poc_method"]
+        # A differential PoC: a grounded CONTROL (no-payload) observation the exploit result is
+        # compared against. Identical control and payload output proves NO effect, so reject it.
+        if base_eid or base_quote:
+            if not (isinstance(base_eid, str) and base_eid.strip()
+                    and isinstance(base_quote, str) and 8 <= len(base_quote) <= 2000):
+                raise ValueError("poc_baseline_evidence_id and poc_baseline_quote must both be given "
+                                 "together, the quote an exact 8..2000 char excerpt of the baseline evidence")
+            if not evidence.ground(base_eid, base_quote):
+                raise ValueError("poc_baseline_quote does not appear in poc_baseline_evidence_id; "
+                                 "capture the control (no-payload) request/response and quote it exactly")
+            if base_quote == poc_quote:
+                raise ValueError("baseline and PoC quotes are identical — a differential PoC must show "
+                                 "the payload changing the observable result versus the control; "
+                                 "identical output is evidence of NO effect, not a confirmed vuln")
+            record["poc_baseline_evidence_id"] = base_eid
+            record["poc_baseline_quote"] = base_quote[:2000]
+            record["poc_differential"] = True
+    elif base_eid or base_quote:
+        raise ValueError("a baseline (poc_baseline_*) needs the payload PoC it is compared against "
+                         "(poc_evidence_id/poc_quote)")
     elif record.get("reproduction"):
         record["poc_verified"] = False
     return record

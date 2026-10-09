@@ -79,5 +79,6 @@ def _digest(findings) -> str:
     import json
     return json.dumps([{k: f.get(k) for k in ("id", "title", "severity", "summary",
                         "evidence_id", "quote", "cve", "reproduction", "poc_evidence_id",
-                        "poc_quote", "poc_verified", "mutation_id") if f.get(k) is not None}
+                        "poc_quote", "poc_method", "poc_baseline_quote", "poc_differential",
+                        "poc_verified", "mutation_id") if f.get(k) is not None}
                        for f in findings], ensure_ascii=True, indent=1)

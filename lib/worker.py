@@ -59,6 +59,7 @@ def run_worker(*, target, task, focus, run_root, client, console, max_steps=28, 
         "evidence": state.evidence.export(cited),
         "notes": [n["message"] for n in state.notes],
         "resources": state.resources,
+        "components": state.components,
         "mutations": state.mutations,
         "agent": {"steps": outcome["steps"], "stopped": outcome["stopped"]},
     }

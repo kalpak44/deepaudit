@@ -63,7 +63,10 @@ def run_verifier(state, client, *, max_steps=40, dangerous=False, log=lambda _: 
             + _digest(state.findings))
     outcome = agent_loop(client, prompts.verifier_prompt(dangerous), task, tools, tier=STRONG,
                          max_steps=max_steps, require_terminal=True,
-                         terminal_tools=("complete_session",), log=log)
+                         terminal_tools=("complete_session",),
+                         terminal_hint="give every remaining finding a verdict, then call "
+                         "complete_session",
+                         log=log)
     for finding in state.findings:  # anything the reviewer never reached is not silently trusted
         finding.setdefault("verification", "unreviewed")
         if finding["verification"] == "unreviewed":

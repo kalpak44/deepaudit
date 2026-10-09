@@ -154,13 +154,19 @@ def _execute_call(call, tools, log, index):
 
 def agent_loop(client, system_prompt, task, tools, *, tier=FAST, max_steps=16,
                log=lambda _: None, terminal_tools=(), require_terminal=False,
-               max_context_chars=320_000, max_parallel_tools=8):
+               max_context_chars=320_000, max_parallel_tools=8,
+               wrap_steps=4, terminal_hint=""):
     """Run one agent session to completion.
 
     `tools` maps a name to (json-schema, handler). The handler takes parsed arguments and
     returns a JSON-serializable result. Handler exceptions become an error tool result rather
     than crashing the session, so one bad call never aborts the whole audit. Returns
     {content, steps, tool_calls, stopped}.
+
+    For sessions that must land on a terminal tool (`require_terminal`), the model is kept aware
+    of its step budget: a brief notice is injected in the back half of the run, escalating to a
+    hard "stop new work and finish now" directive in the final `wrap_steps`. `terminal_hint`
+    describes the landing sequence (e.g. verify-then-finish) for that directive.
     """
     schemas = [{"type": "function", "function": {"name": name, **schema}}
                for name, (schema, _) in tools.items()]
@@ -172,6 +178,20 @@ def agent_loop(client, system_prompt, task, tools, *, tier=FAST, max_steps=16,
             _compact(messages)
             if len(json.dumps(messages, ensure_ascii=True)) > max_context_chars:
                 return {"content": "", "steps": step, "tool_calls": executed, "stopped": "context_limit"}
+        remaining = max_steps - step
+        if require_terminal and terminal_tools:
+            if remaining <= wrap_steps:
+                messages.append({"role": "user", "content":
+                    f"[budget] Only {remaining} step(s) left. Stop starting new work now — no new "
+                    f"scans, no new workers. Land the session: "
+                    f"{terminal_hint or 'call the completion tool'}. "
+                    f"Call {' then '.join(terminal_tools)} before the budget runs out; a reported "
+                    "limitation is better than an unterminated run."})
+            elif remaining <= wrap_steps * 3:
+                messages.append({"role": "user", "content":
+                    f"[budget] Step {step + 1}/{max_steps}, {remaining} steps left. Start "
+                    f"converging and reserve the last ~{wrap_steps} steps to finish cleanly "
+                    f"({terminal_hint or 'call the completion tool'})."})
         log(f"[step {step + 1}/{max_steps}]")
         message = client.complete(messages, schemas, tier=tier)
         if message.get("content"):

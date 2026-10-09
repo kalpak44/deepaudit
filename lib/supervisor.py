@@ -118,6 +118,9 @@ def run_audit(*, target, repo, ref, run_root, client, console,
             "run the verifier, then finish with a prioritized report.")
     outcome = agent_loop(client, prompts.supervisor_prompt(dangerous), task, tools, tier=STRONG,
                          max_steps=max_steps, require_terminal=True, terminal_tools=("finish",),
+                         terminal_hint="gather any still-running workers, run_verifier if any "
+                         "finding is unreviewed, then finish with a prioritized summary and honest "
+                         "coverage gaps",
                          log=lambda m: console.agent("supervisor", m))
 
     confirmed = [f for f in state.findings if f.get("verification") != "rejected"]
@@ -191,7 +194,21 @@ def main(argv=None) -> int:
     if unresolved:
         console.event("AUDIT", "CRITICAL: state changes left unreverted on the target — manual "
                       "cleanup required", mutations=[m["id"] for m in unresolved])
-    return 0 if result["status"] == "complete" and not unresolved else 1
+        return 1
+    if result["status"] == "complete":
+        return 0
+    # The agent never reached `finish`, but the report (report.json/.html/.md + job summary) is
+    # already written from whatever was collected. Don't discard a real audit as a hard failure:
+    # a run with findings is a partial success; only a run that delivered nothing is a failure.
+    stopped = result.get("agent", {}).get("stopped")
+    if result["findings"]:
+        console.event("AUDIT", "partial: budget reached before finish — report written from "
+                      "findings collected so far", stopped=stopped,
+                      findings=len(result["findings"]))
+        return 0
+    console.event("AUDIT", "failed: audit ended before finish with no findings recorded",
+                  stopped=stopped)
+    return 1
 
 
 if __name__ == "__main__":

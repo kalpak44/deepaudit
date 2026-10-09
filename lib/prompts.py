@@ -192,6 +192,13 @@ HOW YOU WORK
 9. FINISH with `finish`: a prioritized summary, confirmed findings, tested hypotheses, and honest
    coverage gaps. Absence of a finding is not proof of security.
 {_DANGEROUS_STEP if dangerous else ""}
+BUDGET: you have a fixed step budget and a `[budget]` notice is injected as it runs down. Pace
+for it: front-load recon and fan-out, batch independent tool calls into single steps (reads,
+cve lookups and runs all parallelize), push long fuzz/nuclei/content-discovery sweeps to workers
+with `spawn_subtask` instead of blocking a step on them, and always reserve the last few steps to
+`run_verifier` then `finish`. Landing a reviewed report beats one more scan — never let the budget
+expire mid-work.
+
 Be concise in your narration. Take big, deliberate, parallel steps; don't loop on trivia."""
 
 

@@ -1,0 +1,80 @@
+name: Cleanup runs
+run-name: cleanup runs (keep ${{ inputs.keep }}${{ inputs.workflow && format(', {0}', inputs.workflow) || '' }})
+
+# On-demand housekeeping: delete old workflow-run history so the Actions tab stays readable.
+# Deletes only COMPLETED runs, never anything in-progress, and never this cleanup run itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: Number of most-recent completed runs to keep (0 = delete all finished runs)
+        required: false
+        default: '0'
+        type: string
+      workflow:
+        description: Limit to one workflow file, e.g. audit.yaml (blank = every workflow)
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cleanup-runs
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP: ${{ inputs.keep }}
+          ONLY_WF: ${{ inputs.workflow }}
+          THIS_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          keep="${KEEP:-0}"
+          echo "repo=$REPO keep=$keep only='${ONLY_WF:-<all>}' self=$THIS_RUN"
+
+          # Runs come back newest-first; keep only completed runs and exclude this run.
+          rows=$(gh api --paginate "repos/$REPO/actions/runs?per_page=100" \
+            --jq ".workflow_runs[] | select(.status==\"completed\") | select(.id != $THIS_RUN) | \"\(.id)\t\(.path)\t\(.name)\"")
+
+          # Optionally restrict to a single workflow file (match on basename of .path).
+          if [ -n "${ONLY_WF:-}" ]; then
+            rows=$(printf '%s\n' "$rows" | awk -F'\t' -v w="$ONLY_WF" '{n=split($2,a,"/"); if (a[n]==w) print}')
+          fi
+
+          total=$(printf '%s\n' "$rows" | grep -c . || true)
+          echo "candidates=$total"
+
+          i=0; deleted=0; failed=0
+          while IFS=$'\t' read -r id path name; do
+            [ -z "${id:-}" ] && continue
+            i=$((i+1))
+            if [ "$i" -le "$keep" ]; then
+              echo "keep    $id  $name"
+              continue
+            fi
+            if gh api -X DELETE "repos/$REPO/actions/runs/$id" >/dev/null 2>&1; then
+              deleted=$((deleted+1)); echo "deleted $id  $name"
+            else
+              failed=$((failed+1)); echo "FAILED  $id  $name"
+            fi
+          done <<< "$rows"
+
+          echo "---"
+          echo "deleted=$deleted failed=$failed kept=$keep candidates=$total"
+          {
+            echo "## Cleanup runs";
+            echo "- scope: ${ONLY_WF:-all workflows}";
+            echo "- deleted: **$deleted**";
+            echo "- kept (most recent): $keep";
+            echo "- failed: $failed";
+          } >> "$GITHUB_STEP_SUMMARY"

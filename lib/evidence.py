@@ -109,6 +109,23 @@ def validate_finding(entry: dict, evidence: Evidence) -> dict:
     for optional in ("cve", "cvss", "epss", "kev", "reproduction", "impact"):
         if entry.get(optional) not in (None, ""):
             record[optional] = entry[optional] if optional in ("cvss", "epss", "kev") else str(entry[optional])[:3000]
+    if isinstance(entry.get("reproduction_script"), str) and entry["reproduction_script"].strip():
+        record["reproduction_script"] = entry["reproduction_script"][:8000]
+    steps = entry.get("reproduction_steps")
+    if isinstance(steps, list) and steps:
+        clean = []
+        for raw in steps[:20]:
+            if isinstance(raw, dict):
+                step = {k: str(raw[k])[:1500] for k in ("command", "expected", "note")
+                        if isinstance(raw.get(k), str) and raw[k].strip()}
+            elif isinstance(raw, str) and raw.strip():
+                step = {"command": raw.strip()[:1500]}
+            else:
+                step = {}
+            if step:
+                clean.append(step)
+        if clean:
+            record["reproduction_steps"] = clean
     poc_eid, poc_quote = entry.get("poc_evidence_id"), entry.get("poc_quote")
     base_eid, base_quote = entry.get("poc_baseline_evidence_id"), entry.get("poc_baseline_quote")
     if poc_eid or poc_quote:

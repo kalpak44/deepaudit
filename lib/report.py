@@ -68,6 +68,36 @@ def _attribution_md(att: dict) -> list:
     return out
 
 
+def _repro_steps_md(steps: list) -> list:
+    if not steps:
+        return []
+    out = ["", "**How to reproduce (step by step):**", ""]
+    for i, step in enumerate(steps, 1):
+        note = step.get("note")
+        head = f"{i}. " + (f"**{_mdq(note)}** — " if note else "")
+        out.append(head.rstrip())
+        if step.get("command"):
+            out += ["", "   ```", *["   " + ln for ln in _fence(step["command"]).splitlines()], "   ```"]
+        if step.get("expected"):
+            out.append(f"   → expected: {_mdq(step['expected'])}")
+        out.append("")
+    return out
+
+
+def _repro_steps_html(steps: list) -> str:
+    if not steps:
+        return ""
+    items = []
+    for step in steps:
+        inner = (f"<b>{_e(step['note'])}</b><br>" if step.get("note") else "")
+        if step.get("command"):
+            inner += f"<pre><code>{_e(step['command'])}</code></pre>"
+        if step.get("expected"):
+            inner += f'<span class="meta">→ expected: {_e(step["expected"])}</span>'
+        items.append(f"<li>{inner}</li>")
+    return "<p><b>How to reproduce (step by step):</b></p><ol>" + "".join(items) + "</ol>"
+
+
 def markdown(result: dict) -> str:
     findings = result.get("findings", [])
     counts = _counts(findings)
@@ -179,6 +209,10 @@ def markdown(result: dict) -> str:
                          if finding.get("poc_verified") else
                          "Reproduction (narrated by the agent, not independently captured)")
                 lines.append(f"\n**{label}:**\n\n```\n{_fence(finding['reproduction'])}\n```\n")
+            lines += _repro_steps_md(finding.get("reproduction_steps") or [])
+            if finding.get("reproduction_script"):
+                lines.append(f"\n**Reproduction script** (copy-paste runnable; in-scope, "
+                             f"non-destructive):\n\n```bash\n{_fence(finding['reproduction_script'])}\n```\n")
             if finding.get("poc_baseline_evidence_id"):
                 lines.append(f"\n**Baseline / control** (`{finding.get('poc_baseline_evidence_id')}`) — "
                              f"the same request/command WITHOUT the payload:\n\n"
@@ -265,6 +299,11 @@ def _finding_html(f: dict) -> str:
                  if f.get("poc_verified") else
                  "Reproduction (narrated by the agent, not independently captured):")
         parts.append(f'<p><b>{label}</b></p><pre><code>{_e(f["reproduction"])}</code></pre>')
+    if f.get("reproduction_steps"):
+        parts.append(_repro_steps_html(f["reproduction_steps"]))
+    if f.get("reproduction_script"):
+        parts.append('<p><b>Reproduction script</b> (copy-paste runnable; in-scope, '
+                     f'non-destructive):</p><pre><code>{_e(f["reproduction_script"])}</code></pre>')
     if f.get("poc_baseline_evidence_id"):
         parts.append(f'<p><b>Baseline / control</b> (<code>{_e(f["poc_baseline_evidence_id"])}</code>) '
                      f'— the same request/command WITHOUT the payload:</p>'

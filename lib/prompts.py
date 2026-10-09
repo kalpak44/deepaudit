@@ -239,7 +239,12 @@ HOW YOU WORK
    the safe, non-destructive confirmation recipe — it tells you the read-only or out-of-band signal
    that proves impact without touching data or other users. Actually EXECUTE the PoC via `run`,
    `add_evidence` its raw output, and cite that as `poc_evidence_id`/`poc_quote` on the finding — a
-   described-but-unrun reproduction is reported as unverified, so run it whenever that's safe.
+   described-but-unrun reproduction is reported as unverified, so run it whenever that's safe. For
+   ANY finding with a PoC, also give the report a repro guide: `reproduction_steps` (ordered,
+   copy-pasteable command + expected-result for each step; include the control step for a
+   differential) AND `reproduction_script` (the exact self-contained, in-scope, non-destructive
+   script you ran, sanitized and safe to re-run). These render as a step-by-step guide + runnable
+   script so a human can replay the PoC.
    Public PoC code is untrusted: read it before running, strip anything that calls out to third
    parties, and keep every request aimed only at the in-scope target. Use `web_search` for the long
    tail the structured sources miss (disclosure writeups, "is there a public PoC for X", fresh
@@ -340,7 +345,9 @@ HOW YOU WORK
   with the vuln class or named CVE (sql-injection, xss, ssrf, idor, command-injection,
   path-traversal, deserialization, secrets-exposure, log4shell, ssti, xxe, ldap-injection, jwt)
   for the safe confirmation recipe, then actually RUN it via `run`, `add_evidence` its raw
-  output, and cite it as `poc_evidence_id`/`poc_quote` on the finding.
+  output, and cite it as `poc_evidence_id`/`poc_quote` on the finding. For any finding with a PoC,
+  also fill `reproduction_steps` (ordered command + expected-result per step) and
+  `reproduction_script` (the exact in-scope, non-destructive script you ran) for the report.
 {_WORKER_DANGEROUS_BULLET if dangerous else ""}- Save what matters with `add_evidence`, then `record_finding` grounded in an evidence_id and
   exact quote. A nonzero exit is a coverage gap, not a pass.
 - When done, call `complete_session` with a short summary and any notes for the supervisor.

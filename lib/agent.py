@@ -74,6 +74,24 @@ FINDING = {"type": "object", "properties": {
     "impact": STRING,
     "reproduction": {"type": "string", "description": "Human-readable repro narrative/steps. "
         "Unverified prose unless poc_evidence_id/poc_quote are also given."},
+    "reproduction_steps": {"type": "array", "description": "A precise, copy-pasteable step-by-step "
+        "reproduction guide for the report — provide this for ANY finding with a PoC. Ordered steps; "
+        "each is the exact command/request to run and what to observe. For a differential PoC, "
+        "include the control step (no payload) and the payload step so a reader sees both outcomes.",
+        "items": {"type": "object", "properties": {
+            "command": {"type": "string", "description": "The exact command/request to run, "
+                "copy-pasteable (e.g. a full curl line incl. host/headers/body)."},
+            "expected": {"type": "string", "description": "What you should observe if the issue is "
+                "present (status code, header, body marker, error, latency, OOB callback)."},
+            "note": {"type": "string", "description": "Optional label/explanation for the step, "
+                "e.g. 'fingerprint', 'control (no payload)', 'payload', 'cleanup'."}},
+            "required": ["command"]}},
+    "reproduction_script": {"type": "string", "description": "A complete, self-contained, "
+        "copy-paste-runnable script (bash unless another runtime is essential) that reproduces this "
+        "finding end to end and prints the proof — ideally the exact script you ran via `run`, "
+        "sanitized to stay in-scope and NON-DESTRUCTIVE. Use variables for the target, echo what each "
+        "step checks, and keep it safe to re-run. Rendered verbatim in the report so a human can "
+        "replay the PoC. Provide this for any verified PoC."},
     "poc_evidence_id": {"type": "string", "description": "Id of the evidence item holding the "
         "RAW captured output of actually executing the reproduction via `run` (not a description "
         "of it). Required, with poc_quote, for a PoC to show as verified in the report."},

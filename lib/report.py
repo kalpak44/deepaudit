@@ -24,6 +24,50 @@ def _mdq(text: str) -> str:
     return str(text).replace("`", "ʼ").replace("\n", " ").strip()[:400]
 
 
+# Ownership/attribution fields, in report order: (key, label).
+_ATTR_FIELDS = [
+    ("organization", "Organization"), ("domain", "Domain"),
+    ("registrant_org", "Registrant org"), ("registrant_name", "Registrant name"),
+    ("registrant_email", "Registrant email"), ("registrant_country", "Registrant country"),
+    ("registrar", "Registrar"), ("created", "Created"), ("updated", "Updated"),
+    ("expires", "Expires"), ("dnssec", "DNSSEC"), ("hosting_provider", "Hosting"),
+    ("asn", "ASN"), ("ip_country", "IP country"), ("reverse_dns", "Reverse DNS"),
+    ("cdn_waf", "CDN / WAF"), ("cert_issuer", "Cert issuer"),
+    ("cert_subject_org", "Cert subject org"), ("notes", "Notes"),
+]
+_ATTR_LISTS = [
+    ("nameservers", "Nameservers"), ("ip_addresses", "IP addresses"),
+    ("cert_sans", "Cert SANs"), ("emails", "Emails"), ("phones", "Phones"),
+    ("addresses", "Addresses"), ("social", "Social"), ("related_domains", "Related domains"),
+    ("subdomains_of_interest", "Subdomains of interest"),
+]
+
+
+def _attribution_md(att: dict) -> list:
+    if not att:
+        return []
+    out = ["### 🧭 Ownership & attribution (OSINT)", ""]
+    rows = [(label, _mdq(att[key])) for key, label in _ATTR_FIELDS
+            if isinstance(att.get(key), str) and att[key].strip()]
+    if rows:
+        out += ["| Field | Value |", "|---|---|"]
+        out += [f"| {label} | {value} |" for label, value in rows]
+        out.append("")
+    for key, label in _ATTR_LISTS:
+        vals = att.get(key)
+        if isinstance(vals, list) and vals:
+            out.append(f"**{label}:** " + ", ".join(_mdq(v) for v in vals))
+    details = att.get("details")
+    if isinstance(details, dict) and details:
+        out += ["", "**Other details:**"]
+        out += [f"- {_mdq(k)}: {_mdq(v)}" for k, v in details.items()]
+    srcs = att.get("sources")
+    if isinstance(srcs, list) and srcs:
+        out += ["", f"_Sources: {', '.join(_mdq(s) for s in srcs)}_"]
+    out.append("")
+    return out
+
+
 def markdown(result: dict) -> str:
     findings = result.get("findings", [])
     counts = _counts(findings)
@@ -50,6 +94,7 @@ def markdown(result: dict) -> str:
         "| " + " | ".join(str(counts[s]) for s in _ORDER) + " |", "",
         "### Summary", "", _mdblock(result.get("summary", "")), "",
     ]
+    lines += _attribution_md(result.get("attribution") or {})
     plan = result.get("plan") or {}
     if plan:
         lines += ["### Plan", ""]
@@ -246,6 +291,21 @@ def html_page(result: dict) -> str:
         f'<li><code>{_e(w.get("focus"))}</code> — {_e(w.get("status"))} '
         + (f'<a href="{_e(w["url"])}">run</a>' if w.get("url") else "") + "</li>"
         for w in result.get("workers", []))
+    attr = result.get("attribution") or {}
+    attr_scalar = "".join(
+        f"<tr><td>{_e(label)}</td><td>{_e(attr[key])}</td></tr>"
+        for key, label in _ATTR_FIELDS if isinstance(attr.get(key), str) and attr[key].strip())
+    attr_lists = "".join(
+        f"<tr><td>{_e(label)}</td><td>{_e(', '.join(str(v) for v in attr[key]))}</td></tr>"
+        for key, label in _ATTR_LISTS if isinstance(attr.get(key), list) and attr[key])
+    attr_details = "".join(
+        f"<tr><td>{_e(k)}</td><td>{_e(v)}</td></tr>"
+        for k, v in (attr.get("details") or {}).items()) if isinstance(attr.get("details"), dict) else ""
+    attr_src = (f'<p class="note">Sources: {_e(", ".join(str(s) for s in attr["sources"]))}</p>'
+                if isinstance(attr.get("sources"), list) and attr.get("sources") else "")
+    attr_html = (f'<h2>🧭 Ownership &amp; attribution (OSINT)</h2><table><tbody>'
+                 f'{attr_scalar}{attr_lists}{attr_details}</tbody></table>{attr_src}'
+                 if (attr_scalar or attr_lists or attr_details) else "")
     plan = result.get("plan") or {}
     plan_rows = "".join(
         f"<tr><td>{_e(k)}</td><td>{_e(', '.join(v) if isinstance(v, list) else v)}</td></tr>"
@@ -326,6 +386,7 @@ footer{{color:#9ca3af;font-size:.8rem;margin-top:2rem;border-top:1px solid #e5e7
 <div class="chip"><span>{result.get('evidence_count', 0)}</span>evidence</div>
 <div class="chip"><span>{len(result.get('resources', []))}</span>resources</div></div>
 <h2>Summary</h2><p>{_e(result.get('summary'))}</p>
+{attr_html}
 {plan_html}
 {hyp_html}
 {res_html}

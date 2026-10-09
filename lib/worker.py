@@ -20,7 +20,7 @@ from .target import target_url
 
 
 def run_worker(*, target, task, focus, run_root, client, console, max_steps=28, dangerous=False) -> dict:
-    state = AuditState(target, run_root, console, dangerous=dangerous)
+    state = AuditState(target, run_root, console, dangerous=dangerous, client=client)
     captured: dict = {}
 
     def complete(args: dict) -> dict:
@@ -60,6 +60,7 @@ def run_worker(*, target, task, focus, run_root, client, console, max_steps=28, 
         "notes": [n["message"] for n in state.notes],
         "resources": state.resources,
         "components": state.components,
+        "attribution": state.attribution,
         "mutations": state.mutations,
         "agent": {"steps": outcome["steps"], "stopped": outcome["stopped"]},
     }

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import intel, playbooks, search
 from .evidence import Evidence, POC_METHODS, SEVERITIES, validate_finding
+from .llm import FAST
 from .run import Runner
 
 STRING = {"type": "string"}
@@ -110,11 +111,13 @@ MUTATION_STATUSES = ("pending_revert", "reverted", "revert_failed")
 class AuditState:
     """Everything a running audit accumulates. Thread-safe for parallel fan-out."""
 
-    def __init__(self, target: str, run_root: Path, console, *, dangerous: bool = False):
+    def __init__(self, target: str, run_root: Path, console, *, dangerous: bool = False,
+                 client=None):
         self.target = target
         self.run_root = run_root
         self.console = console
         self.dangerous = dangerous
+        self.client = client  # LLM client, so `playbook` can author plans for detected stacks
         self.evidence = Evidence(run_root)
         self.runner = Runner(target, console)
         self.findings: list[dict] = []
@@ -123,7 +126,9 @@ class AuditState:
         self.resources: list[dict] = []
         self.components: list[dict] = []
         self.mutations: list[dict] = []
+        self.attribution: dict = {}
         self.plan: dict = {}
+        self._playbook_cache: dict = {}
         self._lock = threading.RLock()
 
     # -- evidence & findings ---------------------------------------------------
@@ -366,6 +371,9 @@ class AuditState:
                         and comp["cve_status"] != "unchecked":
                     self.update_component({"id": imported_id, "cve_status": comp["cve_status"],
                                            "note": comp.get("note", "")})
+        worker_attr = worker_result.get("attribution")
+        if isinstance(worker_attr, dict) and worker_attr:
+            self.record_attribution(worker_attr)
         return imported
 
     # -- persistence -----------------------------------------------------------
@@ -373,9 +381,104 @@ class AuditState:
         for name, data in (("findings", self.findings), ("notes", self.notes),
                            ("hypotheses", self.hypotheses), ("resources", self.resources),
                            ("components", self.components),
-                           ("mutations", self.mutations), ("plan", self.plan)):
+                           ("mutations", self.mutations), ("attribution", self.attribution),
+                           ("plan", self.plan)):
             (self.run_root / f"{name}.json").write_text(
                 json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    # -- ownership / attribution (OSINT) ---------------------------------------
+    _ATTR_SCALAR = ("domain", "organization", "registrant_org", "registrant_name",
+                    "registrant_email", "registrant_country", "registrar", "created",
+                    "updated", "expires", "dnssec", "hosting_provider", "asn", "ip_country",
+                    "reverse_dns", "cert_issuer", "cert_subject_org", "cdn_waf", "notes")
+    _ATTR_LIST = ("nameservers", "ip_addresses", "emails", "phones", "addresses",
+                  "social", "related_domains", "cert_sans", "subdomains_of_interest")
+
+    def record_attribution(self, args: dict) -> dict:
+        """Merge OSINT ownership/registration/hosting facts into the attribution record.
+
+        Call it repeatedly as you learn more (RDAP/WHOIS, DNS, cert org, ASN, reverse-IP, any
+        org/person/email/phone/address found). Scalars take the latest value; lists accumulate
+        (deduped). Cite an evidence_id so the report can show where each fact came from.
+        """
+        with self._lock:
+            att = self.attribution
+            for key in self._ATTR_SCALAR:
+                val = args.get(key)
+                if isinstance(val, str) and val.strip():
+                    att[key] = val.strip()[:500]
+            for key in self._ATTR_LIST:
+                val = args.get(key)
+                if isinstance(val, list):
+                    items = [str(x).strip()[:300] for x in val if str(x).strip()]
+                    if items:
+                        att[key] = list(dict.fromkeys([*att.get(key, []), *items]))
+            extra = args.get("details")
+            if isinstance(extra, dict):
+                store = att.setdefault("details", {})
+                for key, val in extra.items():
+                    if str(key).strip() and str(val).strip():
+                        store[str(key).strip()[:120]] = str(val).strip()[:500]
+            ev = args.get("evidence_id")
+            if isinstance(ev, str) and ev.strip():
+                srcs = att.setdefault("sources", [])
+                if ev.strip() not in srcs:
+                    srcs.append(ev.strip())
+            self.save()
+        return {"accepted": True, "attribution": self.attribution}
+
+    # -- playbooks: curated knowledge + LLM-authored plans ---------------------
+    def _playbook(self, args: dict) -> dict:
+        """Return a testing playbook for a detected stack.
+
+        Curated recipes are the fast reference path; for anything else — or whenever the agent
+        passes `context` evidence — the model AUTHORS a plan tailored to what was actually detected,
+        so coverage is never capped at the hand-written set. A curated recipe, when one exists,
+        seeds the generation as reference knowledge rather than as the output.
+        """
+        from . import prompts  # local import avoids any module load-order coupling
+
+        name = str(args.get("name", "")).strip()
+        context = str(args.get("context", "")).strip()
+        curated = playbooks.get(name)
+        has_curated = not playbooks.is_miss(curated)
+
+        # Fast path: a known stack and no fresh evidence to tailor against — return the recipe.
+        if has_curated and not context:
+            return {"name": name, "source": "curated", "playbook": curated,
+                    "available": playbooks.names()}
+
+        # No client (offline/tests): fall back to curated-or-sentinel, today's behaviour.
+        if self.client is None:
+            return {"name": name, "source": "curated" if has_curated else "none",
+                    "playbook": curated, "available": playbooks.names()}
+
+        cache_key = (name.lower(), context)
+        with self._lock:
+            cached = self._playbook_cache.get(cache_key)
+        if cached:
+            return {"name": name, "source": "generated", "playbook": cached,
+                    "available": playbooks.names()}
+
+        try:
+            messages = playbooks.generation_messages(
+                name, context, prompts.scope(self.dangerous),
+                seed=curated if has_curated else "")
+            reply = self.client.complete(messages, tier=FAST)
+            body = (reply.get("content") or "").strip() if isinstance(reply, dict) else ""
+        except Exception as exc:  # generation is best-effort; never break the audit over it
+            return {"name": name, "source": "error", "error": str(exc)[:200],
+                    "playbook": curated, "available": playbooks.names()}
+        if not body:
+            return {"name": name, "source": "empty", "playbook": curated,
+                    "available": playbooks.names()}
+
+        with self._lock:
+            self._playbook_cache[cache_key] = body
+        return {"name": name, "source": "generated", "playbook": body,
+                "note": "Plan authored for this detected stack from your evidence. Guidance only — "
+                        "stay non-destructive and in-scope; ground every finding in real output.",
+                "available": playbooks.names()}
 
     # -- common tool surface ---------------------------------------------------
     def common_tools(self, who: str) -> dict:
@@ -453,20 +556,50 @@ class AuditState:
                  "detail": STRING, "evidence_id": STRING}, ("id", "status")), self.update_resource),
             "list_resources": (schema("List the resource inventory with coverage status."),
                 lambda _: {"resources": self.resources}),
+            "record_attribution": (schema(
+                "Record OSINT ownership/attribution for the target — WHO owns the site and domain "
+                "and where it is hosted — for the report. Call it repeatedly as you learn more from "
+                "RDAP/WHOIS (registrant org/name/email/country, registrar, created/updated/expires, "
+                "nameservers, DNSSEC), DNS/hosting (ip_addresses, asn, hosting_provider, reverse_dns, "
+                "cdn_waf), the TLS cert (cert_issuer, cert_subject_org, cert_sans), and any contact "
+                "or entity details found (emails, phones, addresses, social, related_domains, "
+                "organization). Scalars take the latest value; lists accumulate. Put anything else "
+                "in `details`. Cite the evidence_id the facts came from. RDAP/WHOIS/DNS lookups are "
+                "research, not target traffic — allowed.",
+                {"domain": STRING, "organization": STRING, "registrant_org": STRING,
+                 "registrant_name": STRING, "registrant_email": STRING, "registrant_country": STRING,
+                 "registrar": STRING, "created": STRING, "updated": STRING, "expires": STRING,
+                 "dnssec": STRING, "hosting_provider": STRING, "asn": STRING, "ip_country": STRING,
+                 "reverse_dns": STRING, "cert_issuer": STRING, "cert_subject_org": STRING,
+                 "cdn_waf": STRING, "notes": STRING,
+                 "nameservers": {"type": "array", "items": STRING},
+                 "ip_addresses": {"type": "array", "items": STRING},
+                 "emails": {"type": "array", "items": STRING},
+                 "phones": {"type": "array", "items": STRING},
+                 "addresses": {"type": "array", "items": STRING},
+                 "social": {"type": "array", "items": STRING},
+                 "related_domains": {"type": "array", "items": STRING},
+                 "cert_sans": {"type": "array", "items": STRING},
+                 "subdomains_of_interest": {"type": "array", "items": STRING},
+                 "details": {"type": "object"}, "evidence_id": STRING}),
+                lambda a: self.record_attribution(a)),
+            "get_attribution": (schema("Show the OSINT ownership/attribution gathered so far."),
+                lambda _: {"attribution": self.attribution}),
             "playbook": (schema(
-                "Get a concrete testing playbook: either for a detected technology/system "
-                "(e.g. wordpress, react-spa, graphql, rest-api, oauth, s3, tls, headers, "
-                "apache-tomcat, jenkins, elastic, exposed-databases, container-orchestration, "
-                "atlassian, spring, grafana, php), or a safe non-destructive PoC recipe for a "
-                "vuln class/CVE you're hypothesizing about (e.g. poc, sql-injection, xss, ssrf, "
-                "idor, command-injection, path-traversal, deserialization, secrets-exposure, "
-                "log4shell, ssti, xxe, ldap-injection, jwt). The response includes the full "
-                "`available` list — call with any name (or an unknown one) to see it. Always "
-                "call the matching vuln-class one before you execute a PoC, to confirm impact "
-                "the safe way.",
-                {"name": STRING}, ("name",)),
-                lambda a: {"name": a.get("name"), "playbook": playbooks.get(a.get("name", "")),
-                           "available": playbooks.names()}),
+                "Get a concrete testing plan for something you DETECTED — a technology, platform, "
+                "framework, CMS, service/appliance, or a vuln class/CVE you're hypothesizing. "
+                "Curated recipes exist for many stacks (e.g. wordpress, react-spa, graphql, "
+                "rest-api, oauth, s3, tls, apache-tomcat, jenkins, elastic, spring, django, "
+                "debug-mode, cloudflare-origin, plus vuln classes: sql-injection, xss, ssrf, idor, "
+                "command-injection, path-traversal, deserialization, log4shell, ssti, xxe, jwt). "
+                "For ANYTHING ELSE — any stack not in that list — a plan is AUTHORED on the fly for "
+                "exactly what you found, so always call this for whatever you fingerprint; never "
+                "skip because it 'isn't in the list'. Pass `context` with the evidence that "
+                "identified it (banners, headers, cookies, paths, versions, response snippets) to "
+                "get a sharper, grounded plan tailored to this target. Always call the matching "
+                "vuln-class recipe before you execute a PoC, to confirm impact the safe way.",
+                {"name": STRING, "context": STRING}, ("name",)),
+                lambda a: self._playbook(a)),
         }
         if self.dangerous:
             tools.update({

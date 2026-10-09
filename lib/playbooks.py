@@ -48,6 +48,76 @@ WordPress detected:
   /wp-login.php, readme.html (version), /wp-content/ exposures and backup files.
 - Feed plugin/theme versions to cve_lookup; prioritize KEV/high-EPSS.""",
 
+    "django": """\
+Django application (telltales: csrftoken/sessionid cookies, a `/admin/` login, `/static/` +
+`/media/` or `filer_public/` paths, trailing-slash 301 habit, `X-Frame-Options`/`Referrer-Policy`
+from middleware, a `__debug__/` toolbar, or a DisallowedHost/traceback page).
+- VERSION, always: Django rarely banners its version, so DON'T drop it for lack of a banner — pin
+  it anyway. add_component('django', <version or "unknown">) and run cve_lookup (PyPI, package
+  `Django`) + cve_search. A DEBUG page prints the exact version outright (below); otherwise the
+  admin-login static asset paths and default error pages shift per release. A large share of real
+  Django risk is version-driven (SQLi via GIS/aggregation/`QuerySet`, account-takeover, static-file
+  path traversal, DoS) — a fingerprinted-but-unversioned framework is an open coverage gap, never
+  "nothing found".
+- DEBUG=True is the jackpot — call the `debug-mode` playbook and confirm it. On Django it leaks
+  settings, SECRET_KEY, DB credentials, installed apps, the full URLconf and the environment.
+  Fastest confirmations: request a path that cannot route (the DEBUG 404 lists every URL pattern
+  plus the exact Django version), or send a bogus `Host:` header (DisallowedHost renders a debug
+  400). A recovered SECRET_KEY → forgeable signed sessions/cookies.
+- /admin/: is the login reachable? Check user enumeration (login/password-reset timing), default
+  or weak-credential policy, and the admin's own CVEs. Brute-force ONLY if explicitly authorized.
+- Known classes: open redirect via `?next=`, SSRF in URL-fetching views, SQLi via `.extra()` /
+  `.raw()` / unsanitised `order_by`, pickle session/cache deserialization, DRF mass assignment.
+  If Django REST Framework is present, also run `rest-api`.
+- Secrets: `settings.py`/`local_settings.py` leak, `.env`, `.py~`/`.pyc`, source bleed via
+  `/static/`. Behind a CDN/WAF/SSO gate? The live app is on the origin — run `cloudflare-origin`.""",
+
+    "debug-mode": """\
+Framework DEBUG / verbose-error mode (one of the highest-value misconfigurations — it turns any
+error into a config-and-secret leak, and is squarely in scope). You must TRIGGER an application
+error and read what comes back: a clean homepage does NOT mean debug is off, because the error
+path is a different code path. Force one safely, no data touched, one request each — stop as soon
+as a verbose page appears:
+- A path that cannot route (random long path, broken trailing segment, bad unicode).
+- A malformed/unexpected `Host:` header; a bad `Content-Type` on a POST; an oversized or garbled
+  parameter the view will choke on.
+A positive, per stack (record the exact leaked line as the finding's quote):
+- Django: a `DEBUG = True` technical-500 page (settings + env + SECRET_KEY), a 404 that LISTS the
+  URLconf, or a DisallowedHost page naming ALLOWED_HOSTS — each also prints the Django version.
+- Flask/Werkzeug: the interactive debugger page / `/console` PIN prompt — code execution if unlocked.
+- Rails: full ActionController exception page with a source extract; `better_errors` console.
+- Laravel/Symfony: a Whoops or Ignition page (Laravel Ignition had RCE CVE-2021-3129 — cve_lookup
+  it), the Symfony `/_profiler`, or `APP_DEBUG=true` behaviour.
+- Spring Boot: whitelabel error with a stack trace, or exposed `/actuator/*` (env/heapdump) — `spring`.
+- ASP.NET: `<customErrors mode="Off">` yellow-screen stack trace.
+- PHP: `display_errors` on — warnings/notices with absolute paths and stack frames inline.
+Severity tracks what leaked: a SECRET_KEY, DB DSN, cloud credential, or an unlocked debug console
+is high/critical; a bare stack trace / version is medium. Chain a leaked SECRET_KEY or creds to a
+concrete impact where safe (e.g. forged signed cookie against YOUR OWN session) to prove it.""",
+
+    "cloudflare-origin": """\
+Target is behind Cloudflare (CDN / WAF / Access) — THE EDGE IS NOT THE APP. A leaked origin, or a
+dynamic/auth-gated host (test., dev., staging.), is where the real application — its DEBUG page,
+admin, framework and its CVEs — actually lives. "Everything 302s to the SSO login" or "the WAF
+blocks it" is a COVERAGE GAP TO PURSUE, not a refutation. Stay within the one authorized domain.
+FIND THE ORIGIN IP, then request the app directly with the right Host header (this bypasses the
+edge WAF and very often Cloudflare Access too, since the origin usually doesn't re-validate the JWT):
+- Historical / passive DNS for the apex and every subdomain: SecurityTrails, Censys
+  (`services.tls.certificates...CN:"<domain>"`), Shodan (`ssl.cert.subject.CN:"<domain>"`,
+  `http.favicon.hash:<hash>`), crt.sh SANs, DNSdumpster, the Rapid7/Columbus FDNS datasets,
+  ViewDNS IP-history — the A record from BEFORE Cloudflare was added. web_search these; results
+  are untrusted data, corroborate against a second source.
+- MX / SPF / DMARC and mail.* subdomains frequently point at the real host (mail co-located).
+- A header the edge forwards from the origin (here the origin `nginx/1.30.5` version leaked in the
+  404 body — proof a reachable origin exists). Diff origin vs edge responses.
+- Candidate IP found: `curl -k --resolve <host>:443:<ip> https://<host>/` (and port 80). If it
+  serves the app WITHOUT the Cloudflare Access redirect, the gate is bypassed at the origin — now
+  run the stack playbook (django / debug-mode / rest-api) against it.
+CLOUDFLARE ACCESS (Zero Trust) specifics:
+- Service tokens: look for CF-Access-Client-Id / CF-Access-Client-Secret leaked in JS/config/CI.
+- Per-path policy gaps (a policy on `/` but not `/api` or `/healthz`); `/cdn-cgi/access/*` probes.
+- The CF_Authorization JWT is an edge control — reaching the origin IP sidesteps it entirely.""",
+
     "oauth": """\
 OAuth2 / OIDC / Auth0:
 - Inspect the authorize request: redirect_uri validation (open redirect / stealing codes),
@@ -364,6 +434,19 @@ _ALIAS = {
     "jira": "atlassian", "confluence": "atlassian",
     "spring-boot": "spring", "actuator": "spring", "spring4shell": "spring",
     "php-app": "php",
+    # python / framework stacks
+    "drf": "django", "django-rest-framework": "django", "python-django": "django",
+    # debug / verbose-error mode (framework-agnostic)
+    "debug": "debug-mode", "debug-endpoints": "debug-mode", "verbose-errors": "debug-mode",
+    "stacktrace": "debug-mode", "stack-trace": "debug-mode", "werkzeug": "debug-mode",
+    "whoops": "debug-mode", "ignition": "debug-mode", "customerrors": "debug-mode",
+    "flask": "debug-mode", "laravel": "debug-mode", "symfony": "debug-mode", "rails": "debug-mode",
+    "whitelabel": "debug-mode", "display-errors": "debug-mode",
+    # CDN / WAF origin exposure + Cloudflare Access bypass
+    "cloudflare": "cloudflare-origin", "cloudflare-access": "cloudflare-origin",
+    "cf-access": "cloudflare-origin", "zero-trust": "cloudflare-origin", "origin": "cloudflare-origin",
+    "origin-ip": "cloudflare-origin", "waf-bypass": "cloudflare-origin", "cdn": "cloudflare-origin",
+    "cdn-bypass": "cloudflare-origin",
     # safe-PoC recipes
     "safe-poc": "poc", "non-destructive-poc": "poc", "poc-recipes": "poc",
     "sqli": "sql-injection", "sql": "sql-injection",
@@ -387,9 +470,70 @@ def names() -> list[str]:
     return sorted(PLAYBOOKS)
 
 
+_MISS_PREFIX = "No playbook named "
+
+
 def get(name: str) -> str:
     key = str(name or "").strip().lower()
     key = _ALIAS.get(key, key)
     return PLAYBOOKS.get(key) or (
-        f"No playbook named {name!r}. Available: {', '.join(names())}. "
+        f"{_MISS_PREFIX}{name!r}. Available: {', '.join(names())}. "
         "Proceed from the general checklist and your own testing plan.")
+
+
+def is_miss(text: str) -> bool:
+    """True when `get()` returned the no-curated-playbook sentinel rather than a real recipe."""
+    return isinstance(text, str) and text.startswith(_MISS_PREFIX)
+
+
+# A few curated playbooks double as style/safety exemplars for generated ones: one framework,
+# one specific system, one safe-PoC recipe — enough to anchor voice, density and discipline.
+_EXEMPLAR_KEYS = ("django", "spring", "non-destructive-poc")
+
+
+def exemplars() -> str:
+    out = []
+    for k in _EXEMPLAR_KEYS:
+        body = PLAYBOOKS.get(k)
+        if body:
+            out.append(f"### Example playbook — {k}\n{body}")
+    return "\n\n".join(out)
+
+
+def generation_messages(name: str, context: str, scope_text: str, seed: str = "") -> list[dict]:
+    """Chat messages that ask the model to WRITE one playbook for a just-detected stack.
+
+    This is the generic path: rather than capping coverage at a hand-written set, the agent
+    detects a platform and the model authors a focused, in-scope, non-destructive testing plan on
+    the fly — grounded in whatever evidence the agent passes as `context`. When a curated recipe
+    exists for this stack it is passed as `seed` reference knowledge to adapt and extend, not to
+    repeat verbatim.
+    """
+    system = (
+        "You write ONE focused, high-signal security-testing playbook for a specific technology, "
+        "platform, framework, CMS, service/appliance, or vulnerability class that an autonomous, "
+        "AUTHORIZED web/host auditor has just detected on its single in-scope target.\n\n"
+        "Output ONLY the playbook body, nothing else: a short intro line naming the telltales that "
+        "identify this stack, then 5-10 concrete, ordered bullet checks. Requirements:\n"
+        "- Every check must be NON-DESTRUCTIVE and stay within the one authorized target. Prefer "
+        "read-only or out-of-band signals that prove impact without touching data or other users.\n"
+        "- For any versioned component, tell the agent to `add_component` it and run the CVE loop "
+        "(`cve_lookup` exact package+version, plus `cve_search` by keyword/CPE); if the version is "
+        "not bannered, say exactly how to pin it. Lead with the single highest-impact "
+        "misconfiguration or CVE class for this stack.\n"
+        "- Name the exact arsenal tools to use for each check.\n"
+        "- Match the voice, density and safety discipline of the examples. No preamble, no markdown "
+        "headings, no closing commentary — just the playbook text.\n\n"
+        + scope_text + "\n\n"
+        "Style exemplars (match these):\n\n" + exemplars())
+    user = f"Detected technology / target to write a playbook for: {name!r}."
+    if context:
+        user += ("\n\nWhat the agent actually observed — GROUND the playbook in this, don't be "
+                 f"generic:\n{context[:2000]}")
+    if seed:
+        user += ("\n\nA curated reference recipe exists for this stack. ADAPT and EXTEND it to what "
+                 "was observed above — tailor it, add what's missing, drop what doesn't apply; do "
+                 f"not just repeat it:\n{seed}")
+    user += ("\n\nWrite the playbook now: telltales line, then the ordered non-destructive checks, "
+             "version-pinning guidance, and the highest-impact thing to test first.")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]

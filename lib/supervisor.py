@@ -25,7 +25,7 @@ SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 def run_audit(*, target, repo, ref, run_root, client, console,
               enable_dispatch=True, max_steps=60, dangerous=False) -> dict:
-    state = AuditState(target, run_root, console, dangerous=dangerous)
+    state = AuditState(target, run_root, console, dangerous=dangerous, client=client)
     dispatcher = Dispatcher(repo=repo, ref=ref, target=target, run_root=run_root, console=console,
                             dangerous=dangerous)
     captured: dict = {}
@@ -141,6 +141,7 @@ def run_audit(*, target, repo, ref, run_root, client, console,
         "hypotheses": state.hypotheses,
         "resources": state.resources,
         "components": state.components,
+        "attribution": state.attribution,
         "mutations": state.mutations,
         "workers": list(dispatcher.records.values()),
         "evidence_count": len(state.evidence.index()),

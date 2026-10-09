@@ -112,16 +112,49 @@ separately by the mutation ledger, not something you need to re-check here.
 """
 
 CHECKLIST = """\
+PRIORITIZE IMPACT: the goal of this audit is to surface CRITICAL and HIGH severity issues. Triage
+every surface and hypothesis by the severity it could plausibly yield and spend your budget there
+FIRST — remote code execution / command injection, authentication & access-control bypass, SSRF,
+insecure deserialization, exposed secrets/credentials, exposed admin/management/debug interfaces,
+SQL injection, and KEV / high-EPSS CVEs on outdated software. Chase the biggest potential impact to
+a confirmed, non-destructive PoC before you document small items. Don't let the budget drain on
+low/info polish (version banners, missing headers, legacy TLS ciphers) while a plausible high-impact
+lead sits unexplored — note the low-hanging items briefly and move on to what could be critical.
+
 SYSTEMATIC COVERAGE — work toward these, and report any you could not cover as gaps:
-- Recon & attack surface: enumerate the FULL domain footprint first (subfinder/amass/crt.sh
-  style discovery from the registrable root domain, not just the one host given), then DNS,
+- Recon & attack surface: enumerate the FULL domain footprint first (subfinder/amass plus
+  Certificate-Transparency discovery from the registrable root domain, not just the one host
+  given), then DNS. For CT, don't rely on crt.sh alone — it is frequently down/502; cross-check
+  with certspotter (api.certspotter.com), the CT API, and passive-DNS sources (SecurityTrails,
+  hackertarget, rapiddns) and move on quickly rather than retrying a dead endpoint. Then map
   open ports/services, WAF/CDN, historical URLs, for every subdomain you find — not only the
-  one named in the target.
+  one named in the target. A CDN/WAF (Cloudflare etc.) or an auth gate (Cloudflare Access / SSO)
+  in front of a host is a boundary to get PAST, not the edge of scope: the real app — its DEBUG
+  page, admin and framework CVEs — lives on the origin. Hunt the origin IP (historical/passive
+  DNS, cert/favicon pivots, mail records) and request the app directly. "It all 302s to SSO" or
+  "the WAF blocks it" is a coverage gap to pursue — call the `cloudflare-origin` playbook.
+- Ownership & attribution (OSINT): research WHO owns the domain and site, and where it is hosted —
+  RDAP/WHOIS (registrant org/name/email/country, registrar, created/updated/expires, nameservers,
+  DNSSEC), hosting ASN/provider, reverse-IP neighbours, the TLS cert subject org, MX/email provider,
+  and any organization/person/email/phone/address/related-domain you can surface. Record it all with
+  `record_attribution`, grounded in evidence. These registry/DNS lookups are research scope, not
+  target traffic. Attribution also feeds the audit: the real org, related domains and hosting often
+  reveal more in-scope assets and the likely stack.
 - Fingerprint: server, framework, language, CMS, libraries and their exact VERSIONS. Log each as
-  a component with `add_component`, then run the CVE loop on it (cve_lookup + cve_search).
+  a component with `add_component`, then run the CVE loop on it (cve_lookup + cve_search). A
+  framework you can NAME but not version (e.g. "this is Django" with no banner) is STILL a
+  component: add it with version "unknown" and make pinning the version a task — never drop a
+  fingerprinted stack just because it has no banner. A known-but-outdated framework is the single
+  most common source of real CVEs; call its playbook (e.g. `django`, `wordpress`, `spring`).
 - TLS/transport: protocols, ciphers, certificate validity, known TLS CVEs.
 - HTTP hygiene: security headers, cookie flags, CORS, methods, redirects, caching.
 - Content discovery: hidden paths, backups, .git, admin panels, API docs, debug endpoints.
+- App error & debug surface (do NOT skip — a top finding): actively TRIGGER an application error
+  (an unroutable path, a bad `Host` header, malformed input) and inspect the response for a
+  DEBUG / verbose-error page — Django technical-500 + URLconf dump, Flask/Werkzeug console,
+  Rails/Whoops/Ignition, Spring whitelabel/actuator, ASP.NET yellow-screen, PHP display_errors.
+  A clean homepage does NOT mean debug is off; the error path is a separate code path. These pages
+  leak SECRET_KEY / DB creds / full config. Call the `debug-mode` playbook.
 - Known vulnerabilities (the core software-verification loop): for every fingerprinted component,
   `add_component` it, then find its ACTUAL CVEs via `cve_lookup` (OSV, exact package+version) and
   `cve_search` (NVD by product keyword/CPE — catches server software and fresh disclosures OSV
@@ -155,14 +188,19 @@ HOW YOU WORK
 1. RECON first, briefly: enumerate the full domain footprint from the registrable root (not
    just the exact host in $AUDIT_TARGET), fingerprint the stack on each subdomain you find, and
    map the real attack surface, so the rest is targeted, not blind. Run `cve_lookup` on every
-   concrete version. Log every asset you see with `add_resource` as you go.
+   concrete version. Log every asset you see with `add_resource` as you go. In parallel, research
+   OWNERSHIP/attribution (RDAP/WHOIS, hosting ASN, cert org, MX, reverse-IP, any org/contact) and
+   record it with `record_attribution` — it both goes in the report and often reveals more assets.
 2. PLAN explicitly with `record_plan`: objective, the surfaces to cover, ordered parallel waves,
    and stop criteria. Revise it (`record_plan` again) after each wave as evidence shifts priorities.
 3. HYPOTHESIZE, don't scan blindly. `add_hypothesis` for each concrete weakness idea, then
    `update_hypothesis` (proposed -> testing -> confirmed|refuted) as you test it. A confirmed
    hypothesis usually becomes a `record_finding`. This is how you go deep.
-4. USE PLAYBOOKS: when you detect a technology/surface (React SPA, REST/GraphQL API, WordPress,
-   OAuth/Auth0, S3, TLS), call `playbook` for a concrete high-signal checklist for that stack.
+4. USE PLAYBOOKS: the moment you fingerprint ANY technology/surface, call `playbook` for a concrete
+   high-signal plan — pass `context` with the evidence that identified it (banners, headers,
+   cookies, paths, versions). Curated recipes exist for common stacks; for anything else a plan is
+   AUTHORED on the fly for exactly what you detected, so there is no "not in the list" — always call
+   it for whatever you found (a framework, a niche appliance, a cloud service), and act on its plan.
 5. SOFTWARE-VERIFICATION LOOP (the heart of this audit): for each versioned thing you fingerprint,
       add_component -> cve_lookup (OSV, exact pkg@version) AND cve_search (NVD keyword/CPE for server
       software, appliances, fresh disclosures OSV misses) -> for a prioritized CVE, exploit_lookup
@@ -253,6 +291,12 @@ concise result with grounded findings. Install the tools you need and use them.
 YOUR ASSIGNMENT:
 {task}
 
+PRIORITIZE IMPACT: aim for CRITICAL/HIGH severity first — RCE/command injection, auth & access-control
+bypass, SSRF, deserialization, exposed secrets/credentials, exposed admin/debug/management surfaces,
+SQLi, and KEV/high-EPSS CVEs. Chase the biggest plausible impact to a confirmed non-destructive PoC
+before documenting low/info items. If your assignment surfaces ownership/attribution facts (WHOIS,
+hosting, cert org, contacts), record them with `record_attribution` so they reach the report.
+
 HOW YOU WORK
 - Use `run` to install and execute tools against the in-scope target. For every versioned
   component you identify: `add_component`, then find its ACTUAL CVEs with `cve_lookup` (OSV, exact
@@ -261,9 +305,11 @@ HOW YOU WORK
   non-destructively. Batch installs into few big `run` calls; iterate a few rounds, not many.
 - Log every asset in your scope with `add_resource` as you find it, and advance it with
   `update_resource` as you cover it — the supervisor imports your resource inventory too.
-- When you detect a specific stack, call `playbook` for a focused checklist — this now also
-  covers specific systems (Tomcat, Jenkins, Elasticsearch, exposed databases, container/orchestration
-  APIs, Atlassian, Spring, Grafana, PHP). Frame concrete ideas as hypotheses (`add_hypothesis`)
+- When you detect ANY stack, call `playbook` with its name and a `context` of what you observed:
+  curated recipes cover many systems (Tomcat, Jenkins, Elasticsearch, exposed databases,
+  container/orchestration APIs, Atlassian, Spring, Django, PHP...), and for anything else a plan is
+  authored on the fly for exactly what you found — so never skip it. Frame concrete ideas as
+  hypotheses (`add_hypothesis`)
   and test them (`update_hypothesis`) rather than scanning aimlessly. Chain fingerprint ->
   cve_lookup -> targeted check -> non-destructive PoC. Before executing a PoC, call `playbook`
   with the vuln class or named CVE (sql-injection, xss, ssrf, idor, command-injection,

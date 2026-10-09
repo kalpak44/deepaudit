@@ -107,6 +107,42 @@ class Grounding(unittest.TestCase):
                               "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
                               "poc_evidence_id": "e001"}, self.ev)
 
+    def test_accepts_differential_poc(self):
+        base = self.ev.add("run:control", {"stdout": "HTTP 200 len=100 no reflection"})
+        poc = self.ev.add("run:payload", {"stdout": "HTTP 200 len=140 <script>MARKER42</script>"})
+        rec = validate_finding({"title": "t", "summary": "s", "remediation": "r",
+                                "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "high",
+                                "poc_method": "differential",
+                                "poc_baseline_evidence_id": base, "poc_baseline_quote": "len=100 no reflection",
+                                "poc_evidence_id": poc, "poc_quote": "<script>MARKER42</script>"}, self.ev)
+        self.assertTrue(rec["poc_verified"])
+        self.assertTrue(rec["poc_differential"])
+        self.assertEqual(rec["poc_method"], "differential")
+        self.assertEqual(rec["poc_baseline_evidence_id"], base)
+
+    def test_rejects_identical_baseline_and_payload(self):
+        same = self.ev.add("run", {"stdout": "HTTP/1.1 200 OK identical body"})
+        with self.assertRaises(ValueError):
+            validate_finding({"title": "t", "summary": "s", "remediation": "r",
+                              "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
+                              "poc_baseline_evidence_id": same, "poc_baseline_quote": "200 OK identical body",
+                              "poc_evidence_id": same, "poc_quote": "200 OK identical body"}, self.ev)
+
+    def test_rejects_ungrounded_baseline(self):
+        poc = self.ev.add("run:payload", {"stdout": "reflected MARKER"})
+        with self.assertRaises(ValueError):
+            validate_finding({"title": "t", "summary": "s", "remediation": "r",
+                              "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
+                              "poc_baseline_evidence_id": self.eid, "poc_baseline_quote": "not in evidence",
+                              "poc_evidence_id": poc, "poc_quote": "reflected MARKER"}, self.ev)
+
+    def test_rejects_baseline_without_payload(self):
+        base = self.ev.add("run:control", {"stdout": "baseline only"})
+        with self.assertRaises(ValueError):
+            validate_finding({"title": "t", "summary": "s", "remediation": "r",
+                              "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
+                              "poc_baseline_evidence_id": base, "poc_baseline_quote": "baseline only"}, self.ev)
+
     def test_unverified_reproduction_flagged(self):
         rec = validate_finding({"title": "t", "summary": "s", "remediation": "r",
                                 "evidence_id": self.eid, "quote": "nginx/1.18.0", "severity": "medium",
@@ -270,6 +306,168 @@ class ResourceInventory(unittest.TestCase):
         self.assertEqual(state.resources[0]["status"], "tested")
 
 
+class SoftwareInventory(unittest.TestCase):
+    def test_add_update_dedupe_component(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        cid = state.add_component("supervisor", {"name": "Apache Tomcat", "version": "9.0.30",
+                                                 "source": "whatweb", "evidence_id": "e001"})["id"]
+        dup = state.add_component("supervisor", {"name": "Apache Tomcat", "version": "9.0.30"})
+        self.assertTrue(dup["duplicate"])
+        self.assertEqual(state.components[0]["cve_status"], "unchecked")
+        self.assertIn("e001", state.components[0]["evidence_ids"])
+        state.update_component({"id": cid, "cve_status": "confirmed_vulnerable", "note": "RCE",
+                                "evidence_id": "e002"})
+        self.assertEqual(state.components[0]["cve_status"], "confirmed_vulnerable")
+        self.assertIn("e002", state.components[0]["evidence_ids"])
+
+    def test_component_requires_name_and_valid_status(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        self.assertIn("error", state.add_component("supervisor", {"version": "1.0"}))
+        cid = state.add_component("supervisor", {"name": "nginx"})["id"]
+        self.assertEqual(state.components[0]["version"], "unknown")
+        self.assertIn("error", state.update_component({"id": cid, "cve_status": "bogus"}))
+
+    def test_import_components_from_worker(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        state.import_worker({"status": "ok", "findings": [], "components": [
+            {"name": "OpenSSH", "version": "8.2p1", "cve_status": "potentially_affected",
+             "source": "nmap", "note": "banner"}]}, focus="recon")
+        self.assertEqual(len(state.components), 1)
+        self.assertEqual(state.components[0]["cve_status"], "potentially_affected")
+
+    def test_cve_search_and_exploit_tools_present(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        tools = state.common_tools("supervisor")
+        for name in ("cve_search", "exploit_lookup", "add_component", "update_component",
+                     "list_components"):
+            self.assertIn(name, tools)
+
+
+class CveIntel(unittest.TestCase):
+    def test_nvd_parse_picks_best_cvss_and_exploit_refs(self):
+        from lib import intel
+        cve = {"id": "CVE-2022-26134",
+               "descriptions": [{"lang": "en", "value": "OGNL injection in Confluence"}],
+               "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8,
+                           "baseSeverity": "CRITICAL", "vectorString": "AV:N/..."}}],
+                           "cvssMetricV2": [{"cvssData": {"baseScore": 7.5}}]},
+               "weaknesses": [{"description": [{"value": "CWE-917"}, {"value": "NVD-CWE-Other"}]}],
+               "references": [{"url": "https://poc.example/exploit", "tags": ["Exploit"]},
+                              {"url": "https://vendor.example/advisory", "tags": ["Vendor Advisory"]}]}
+        parsed = intel._nvd_parse(cve, {"CVE-2022-26134"})
+        self.assertEqual(parsed["cvss"], 9.8)
+        self.assertEqual(parsed["severity"], "CRITICAL")
+        self.assertTrue(parsed["kev"])
+        self.assertEqual(parsed["cwes"], ["CWE-917"])
+        self.assertEqual(parsed["exploit_refs"], ["https://poc.example/exploit"])
+
+    def test_nvd_search_sorts_and_scores(self):
+        from lib import intel
+        orig_get, orig_epss, orig_kev = intel._get_json, intel.epss_scores, intel.kev_set
+        intel._get_json = lambda *a, **k: {"totalResults": 2, "vulnerabilities": [
+            {"cve": {"id": "CVE-2020-0001", "descriptions": [{"lang": "en", "value": "low"}],
+                     "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 4.0}}]}}},
+            {"cve": {"id": "CVE-2021-44228", "descriptions": [{"lang": "en", "value": "log4shell"}],
+                     "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 10.0}}]}}}]}
+        intel.epss_scores = lambda ids: {"CVE-2021-44228": 0.97, "CVE-2020-0001": 0.01}
+        intel.kev_set = lambda: {"CVE-2021-44228"}
+        try:
+            out = intel.nvd_search("log4j")
+            self.assertEqual(out["results"][0]["cve"], "CVE-2021-44228")  # KEV+EPSS first
+            self.assertEqual(out["kev_hits"], 1)
+        finally:
+            intel._get_json, intel.epss_scores, intel.kev_set = orig_get, orig_epss, orig_kev
+
+    def test_nvd_search_requires_a_query(self):
+        from lib import intel
+        with self.assertRaises(ValueError):
+            intel.nvd_search("", "")
+
+    def test_exploit_intel_flags_public_pocs(self):
+        from lib import intel
+        orig_get, orig_epss, orig_kev = intel._get_json, intel.epss_scores, intel.kev_set
+
+        def fake_get(host, path, **k):
+            if host == intel._POC_HOST:
+                return [{"full_name": "a/poc", "html_url": "https://github.com/a/poc",
+                         "stargazers_count": 42, "description": "log4shell poc"}]
+            return {"vulnerabilities": [{"cve": {"id": "CVE-2021-44228",
+                    "descriptions": [{"lang": "en", "value": "log4shell"}],
+                    "references": [{"url": "https://x/exploit", "tags": ["Exploit"]}]}}]}
+        intel._get_json = fake_get
+        intel.epss_scores = lambda ids: {"CVE-2021-44228": 0.97}
+        intel.kev_set = lambda: {"CVE-2021-44228"}
+        try:
+            out = intel.exploit_intel("CVE-2021-44228")
+            self.assertTrue(out["public_exploit_available"])
+            self.assertEqual(out["github_pocs"][0]["stars"], 42)
+            self.assertEqual(out["nvd_exploit_refs"], ["https://x/exploit"])
+            self.assertTrue(out["kev"])
+        finally:
+            intel._get_json, intel.epss_scores, intel.kev_set = orig_get, orig_epss, orig_kev
+        with self.assertRaises(ValueError):
+            intel.exploit_intel("not-a-cve")
+
+
+class WebSearch(unittest.TestCase):
+    def test_brave_parses_and_normalizes(self):
+        from lib import search
+        orig = search._https
+        search._https = lambda host, path, **k: (200, json.dumps({"web": {"results": [
+            {"title": "Log4Shell writeup", "url": "https://blog/x", "description": "a PoC"}]}}).encode())
+        try:
+            out = search.web_search("log4shell poc", provider="brave", api_key="k")
+            self.assertEqual(out["provider"], "brave")
+            self.assertEqual(out["results"][0]["url"], "https://blog/x")
+            self.assertEqual(out["results"][0]["snippet"], "a PoC")
+        finally:
+            search._https = orig
+
+    def test_tavily_parses_answer(self):
+        from lib import search
+        orig = search._https
+        search._https = lambda host, path, **k: (200, json.dumps({"answer": "it is CVE-2021-44228",
+            "results": [{"title": "t", "url": "https://t", "content": "snip"}]}).encode())
+        try:
+            out = search.web_search("q", provider="tavily", api_key="k")
+            self.assertEqual(out["answer"], "it is CVE-2021-44228")
+            self.assertEqual(out["results"][0]["snippet"], "snip")
+        finally:
+            search._https = orig
+
+    def test_ddg_keyless_parses_html_and_decodes_redirect(self):
+        from lib import search
+        orig = search._https
+        page = ('<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Freal%2Fpage&rut=z">'
+                'Real <b>Title</b></a>'
+                '<a class="result__snippet" href="x">the <b>snippet</b></a>')
+        search._https = lambda host, path, **k: (200, page.encode())
+        try:
+            out = search.web_search("anything")  # default provider ddg, no key
+            self.assertEqual(out["provider"], "ddg")
+            self.assertEqual(out["results"][0]["url"], "https://real/page")
+            self.assertEqual(out["results"][0]["title"], "Real Title")
+            self.assertEqual(out["results"][0]["snippet"], "the snippet")
+        finally:
+            search._https = orig
+
+    def test_brave_without_key_errors(self):
+        from lib import search
+        out = search.web_search("q", provider="brave", api_key="")
+        self.assertIn("SEARCH_API_KEY", out["error"])
+        self.assertEqual(out["results"], [])
+
+    def test_unknown_provider_and_empty_query(self):
+        from lib import search
+        self.assertIn("unknown", search.web_search("q", provider="bing")["error"])
+        with self.assertRaises(ValueError):
+            search.web_search("")
+
+    def test_web_search_tool_wired(self):
+        state = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
+        self.assertIn("web_search", state.common_tools("supervisor"))
+
+
 class DangerousMode(unittest.TestCase):
     def test_tools_only_exposed_when_dangerous(self):
         safe = AuditState("https://example.com/", Path(tempfile.mkdtemp()), Console())
@@ -339,21 +537,32 @@ class Reporting(unittest.TestCase):
                 {"id": "F002", "title": "a", "severity": "critical", "verification": "supported",
                  "evidence_id": "e1", "quote": "y", "summary": "s", "remediation": "r", "kev": True,
                  "reproduction": "curl ...", "poc_evidence_id": "e3", "poc_quote": "pwned",
-                 "poc_verified": True},
+                 "poc_verified": True, "poc_differential": True, "poc_method": "differential",
+                 "poc_baseline_evidence_id": "e4", "poc_baseline_quote": "control-no-effect"},
             ],
             "resources": [{"id": "R001", "kind": "subdomain", "name": "api.example.com",
                           "status": "tested", "detail": ""}],
+            "components": [{"id": "C001", "name": "Apache Tomcat", "version": "9.0.30",
+                           "cve_status": "confirmed_vulnerable", "source": "whatweb"}],
         }
         html = report.html_page(result)
         self.assertIn("&lt;script&gt;", html)
         self.assertNotIn("<script>", html.split("<title>")[1])
         self.assertIn("Resources audited", html)
         self.assertIn("PoC verified", html)
+        self.assertIn("Software inventory", html)
+        self.assertIn("Apache Tomcat", html)
+        self.assertIn("Baseline / control", html)
+        self.assertIn("control-no-effect", html)
         md = report.markdown(result)
         self.assertIn("KEV", md)
         self.assertIn("Resources audited", md)
         self.assertIn("PoC verified", md)
         self.assertIn("PoC output", md)
+        self.assertIn("Software inventory", md)
+        self.assertIn("confirmed_vulnerable", md)
+        self.assertIn("Baseline / control", md)
+        self.assertIn("control-no-effect", md)
 
     def test_dangerous_mode_and_unresolved_mutation_banner(self):
         result = {

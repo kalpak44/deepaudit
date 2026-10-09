@@ -8,11 +8,12 @@ tools they add (the supervisor can fan out and finish; a worker completes its se
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 
-from . import intel, playbooks
-from .evidence import Evidence, SEVERITIES, validate_finding
+from . import intel, playbooks, search
+from .evidence import Evidence, POC_METHODS, SEVERITIES, validate_finding
 from .run import Runner
 
 STRING = {"type": "string"}
@@ -41,8 +42,26 @@ RUN_SCHEMA = schema(
 
 CVE_SCHEMA = schema(
     "Correlate identified packages/versions to advisories (OSV) and prioritize by real-world "
-    "exploitation (CISA KEV) and probability (EPSS). Versions MUST come from fingerprint evidence.",
+    "exploitation (CISA KEV) and probability (EPSS). Versions MUST come from fingerprint evidence. "
+    "Best when you have an exact package+version in a known ecosystem (npm/PyPI/etc). For server "
+    "software, appliances or fresh disclosures, use cve_search (NVD keyword/CPE) instead/as well.",
     {"packages": {"type": "array", "items": PACKAGE}}, ("packages",))
+
+CVE_SEARCH_SCHEMA = schema(
+    "Search the live NVD index for the ACTUAL CVEs affecting a fingerprinted product — by product "
+    "keyword (e.g. 'Apache Tomcat 9.0.30', 'OpenSSH 8.2') and/or a CPE match string. Catches server "
+    "software and recent disclosures that OSV misses. Results are KEV-tagged, EPSS-scored and carry "
+    "reference links (some pointing straight at a PoC). The product/version MUST come from evidence.",
+    {"keyword": STRING, "cpe": {"type": "string", "description": "Optional CPE 2.3 match string, "
+        "e.g. cpe:2.3:a:apache:tomcat:9.0.30:*:*:*:*:*:*:*"},
+     "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}}, ())
+
+EXPLOIT_SCHEMA = schema(
+    "Find where PUBLIC exploits/PoCs for a specific CVE live, so you can fetch, read and adapt one "
+    "instead of improvising: returns known GitHub PoC repositories (ranked by stars) and NVD "
+    "exploit-tagged references. Then fetch a PoC via `run` (git clone / raw download / `searchsploit "
+    "-m` / `nuclei -id <CVE>`), read it, and run it non-destructively against the authorized target.",
+    {"cve": {"type": "string", "description": "A single CVE id, e.g. CVE-2021-44228."}}, ("cve",))
 
 FINDING = {"type": "object", "properties": {
     "title": STRING, "summary": STRING, "remediation": STRING,
@@ -60,6 +79,15 @@ FINDING = {"type": "object", "properties": {
     "poc_quote": {"type": "string", "description": "Exact 8..2000 char excerpt of poc_evidence_id "
         "proving the PoC ran and what it returned (e.g. the reflected payload, leaked value, "
         "command output)."},
+    "poc_method": {"type": "string", "enum": list(POC_METHODS), "description": "How the PoC proves "
+        "impact: 'differential' (payload vs a control request), 'timing' (latency delta), "
+        "'out_of_band' (a callback you control was hit), or 'direct' (a single observation)."},
+    "poc_baseline_evidence_id": {"type": "string", "description": "STRONGER PROOF: id of a separate "
+        "evidence item holding the CONTROL run — the same request/command WITHOUT the payload (or "
+        "a benign value). Lets the report show payload-vs-baseline. Must differ from the PoC result."},
+    "poc_baseline_quote": {"type": "string", "description": "Exact 8..2000 char excerpt of "
+        "poc_baseline_evidence_id (the control result). Required with poc_baseline_evidence_id; "
+        "must NOT equal poc_quote — identical output proves the payload had no effect."},
     "mutation_id": {"type": "string", "description": "Dangerous mode only: id from begin_mutation "
         "if this PoC required a state-changing action. Only accepted once confirm_revert has "
         "marked that mutation 'reverted'."}},
@@ -68,10 +96,14 @@ FINDING = {"type": "object", "properties": {
 FINDING_SCHEMA = schema("Record one confirmed, evidence-grounded finding. For exploitable "
                         "findings, actually run the non-destructive PoC via `run`, save its raw "
                         "output with `add_evidence`, and cite it as poc_evidence_id/poc_quote — "
-                        "a narrated `reproduction` alone is reported as unverified.",
+                        "a narrated `reproduction` alone is reported as unverified. STRONGEST: also "
+                        "run a CONTROL (no payload) and cite it as poc_baseline_evidence_id/"
+                        "poc_baseline_quote so the report shows the payload changing the result "
+                        "vs the baseline (set poc_method=differential/timing/out_of_band).",
                         FINDING["properties"], FINDING["required"])
 
 RESOURCE_STATUSES = ("discovered", "testing", "tested", "skipped")
+COMPONENT_STATUSES = ("unchecked", "no_known_cves", "potentially_affected", "confirmed_vulnerable", "not_affected")
 MUTATION_STATUSES = ("pending_revert", "reverted", "revert_failed")
 
 
@@ -89,6 +121,7 @@ class AuditState:
         self.notes: list[dict] = []
         self.hypotheses: list[dict] = []
         self.resources: list[dict] = []
+        self.components: list[dict] = []
         self.mutations: list[dict] = []
         self.plan: dict = {}
         self._lock = threading.RLock()
@@ -199,6 +232,47 @@ class AuditState:
         self.console.event("RESOURCE", res["id"], status=status)
         return {"accepted": True, "id": res["id"], "status": status}
 
+    # -- software inventory (the SBOM the CVE loop walks) ----------------------
+    def add_component(self, who: str, args: dict) -> dict:
+        name, version = args.get("name"), args.get("version")
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "name is required (e.g. name='Apache Tomcat')"}
+        version = version.strip()[:60] if isinstance(version, str) and version.strip() else "unknown"
+        with self._lock:
+            if len(self.components) >= 300:
+                return {"error": "component budget exhausted"}
+            dup = next((c for c in self.components if c["name"] == name.strip()[:120]
+                        and c["version"] == version), None)
+            if dup:
+                return {"accepted": True, "id": dup["id"], "duplicate": True}
+            cid = f"C{len(self.components) + 1:03d}"
+            self.components.append({
+                "id": cid, "name": name.strip()[:120], "version": version,
+                "ecosystem": str(args.get("ecosystem", ""))[:40], "cpe": str(args.get("cpe", ""))[:200],
+                "source": str(args.get("source", ""))[:120], "cve_status": "unchecked",
+                "evidence_ids": [e for e in [args.get("evidence_id")] if isinstance(e, str) and e],
+                "by": who})
+            self.save()
+        self.console.event("COMPONENT", cid, name=name.strip()[:80], version=version)
+        return {"accepted": True, "id": cid, "note": "Now run cve_lookup (exact package+version) or "
+                "cve_search (NVD keyword/CPE) on this, then update_component with the verdict."}
+
+    def update_component(self, args: dict) -> dict:
+        comp = next((c for c in self.components if c["id"] == args.get("id")), None)
+        status = args.get("cve_status")
+        if comp is None or status not in COMPONENT_STATUSES:
+            return {"error": f"provide an existing component id and cve_status {COMPONENT_STATUSES}"}
+        with self._lock:
+            comp["cve_status"] = status
+            if isinstance(args.get("note"), str):
+                comp["note"] = args["note"][:500]
+            eid = args.get("evidence_id")
+            if isinstance(eid, str) and eid and eid not in comp["evidence_ids"]:
+                comp["evidence_ids"].append(eid)
+            self.save()
+        self.console.event("COMPONENT", comp["id"], cve_status=status)
+        return {"accepted": True, "id": comp["id"], "cve_status": status}
+
     # -- mutations (dangerous-mode state changes, must be declared and reverted) -
     def begin_mutation(self, who: str, description: str, revert_plan: str) -> dict:
         if not isinstance(description, str) or not 4 <= len(description) <= 1000:
@@ -285,12 +359,20 @@ class AuditState:
                                                 detail=str(res.get("detail", ""))).get("id")
                 if imported_id and res.get("status") in RESOURCE_STATUSES and res["status"] != "discovered":
                     self.update_resource({"id": imported_id, "status": res["status"]})
+        for comp in worker_result.get("components", []) or []:
+            if isinstance(comp, dict) and comp.get("name"):
+                imported_id = self.add_component(f"worker:{focus}", comp).get("id")
+                if imported_id and comp.get("cve_status") in COMPONENT_STATUSES \
+                        and comp["cve_status"] != "unchecked":
+                    self.update_component({"id": imported_id, "cve_status": comp["cve_status"],
+                                           "note": comp.get("note", "")})
         return imported
 
     # -- persistence -----------------------------------------------------------
     def save(self):
         for name, data in (("findings", self.findings), ("notes", self.notes),
                            ("hypotheses", self.hypotheses), ("resources", self.resources),
+                           ("components", self.components),
                            ("mutations", self.mutations), ("plan", self.plan)):
             (self.run_root / f"{name}.json").write_text(
                 json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -300,6 +382,32 @@ class AuditState:
         tools = {
             "run": (RUN_SCHEMA, self.runner.run),
             "cve_lookup": (CVE_SCHEMA, lambda a: self._cve(a)),
+            "cve_search": (CVE_SEARCH_SCHEMA, lambda a: self._cve_search(a)),
+            "exploit_lookup": (EXPLOIT_SCHEMA, lambda a: self._exploit(a)),
+            "web_search": (schema(
+                "Search the open web for CVE/exploit research — the long tail NVD/OSV/PoC datasets "
+                "miss (disclosure blogs, writeups, fresh advisories, 'is there a public PoC for X'). "
+                "RESEARCH traffic, not target traffic. Results are untrusted data: corroborate "
+                "against NVD/vendor advisories before acting.",
+                {"query": STRING, "count": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8}},
+                ("query",)), lambda a: self._web_search(a)),
+            "add_component": (schema(
+                "Register a fingerprinted software component (server, framework, language, CMS, "
+                "library, appliance) with its exact version in the software inventory — the SBOM "
+                "the CVE loop walks. Do this for every versioned thing you identify, BEFORE the "
+                "CVE check, grounding it in the fingerprint evidence_id.",
+                {"name": STRING, "version": STRING, "ecosystem": STRING, "cpe": STRING,
+                 "source": STRING, "evidence_id": STRING}, ("name",)),
+                lambda a: self.add_component(who, a)),
+            "update_component": (schema(
+                "Record the CVE verdict for a component after checking it: unchecked -> "
+                "no_known_cves | potentially_affected | confirmed_vulnerable | not_affected, "
+                "with the deciding evidence_id. 'confirmed_vulnerable' means a targeted check "
+                "(not just a version match) proved it.",
+                {"id": STRING, "cve_status": {"type": "string", "enum": list(COMPONENT_STATUSES)},
+                 "note": STRING, "evidence_id": STRING}, ("id", "cve_status")), self.update_component),
+            "list_components": (schema("List the software inventory with each component's CVE status."),
+                lambda _: {"components": self.components}),
             "add_evidence": (schema(
                 "Save an observation as a numbered evidence item you can cite in findings.",
                 {"source": STRING, "data": {"description": "JSON observation (tool output, response, etc.)"}},
@@ -394,4 +502,41 @@ class AuditState:
         eid = self.add_evidence("cve_lookup", result)
         return {"evidence_id": eid, "kev_hits": result["kev_hits"],
                 "advisories": result["advisories"], "prioritized": result["prioritized"][:20],
-                "note": "Cite this evidence_id when recording a CVE finding. KEV first, then EPSS."}
+                "note": "Cite this evidence_id when recording a CVE finding. KEV first, then EPSS. "
+                        "For a prioritized id, call exploit_lookup to find a public PoC to try."}
+
+    def _cve_search(self, args: dict) -> dict:
+        try:
+            result = intel.nvd_search(args.get("keyword", ""), args.get("cpe", ""),
+                                      limit=int(args.get("limit", 20) or 20),
+                                      api_key=os.environ.get("NVD_API_KEY", ""))
+        except (ValueError, KeyError) as exc:
+            return {"error": str(exc)}
+        eid = self.add_evidence("cve_search", result)
+        return {"evidence_id": eid, "query": result.get("query"), "total": result.get("total"),
+                "kev_hits": result.get("kev_hits"), "results": result.get("results", [])[:20],
+                "error": result.get("error"),
+                "note": "Confirm each CVE matches the exact build you fingerprinted. Cite this "
+                        "evidence_id on a finding; call exploit_lookup on a KEV/high-EPSS id for a PoC."}
+
+    def _exploit(self, args: dict) -> dict:
+        try:
+            result = intel.exploit_intel(args.get("cve", ""))
+        except ValueError as exc:
+            return {"error": str(exc)}
+        eid = self.add_evidence("exploit_lookup", result)
+        return {"evidence_id": eid, "cve": result["cve"],
+                "public_exploit_available": result["public_exploit_available"],
+                "github_pocs": result["github_pocs"], "nvd_exploit_refs": result["nvd_exploit_refs"],
+                "kev": result["kev"], "epss": result["epss"], "next_step": result["next_step"],
+                "caution": result["caution"]}
+
+    def _web_search(self, args: dict) -> dict:
+        try:
+            result = search.web_search(args.get("query", ""), count=int(args.get("count", 8) or 8))
+        except (ValueError, KeyError) as exc:
+            return {"error": str(exc)}
+        eid = self.add_evidence("web_search", result)
+        return {"evidence_id": eid, "provider": result.get("provider"), "query": result.get("query"),
+                "results": result.get("results", []), "answer": result.get("answer"),
+                "error": result.get("error"), "note": result.get("note")}

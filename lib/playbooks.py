@@ -192,7 +192,13 @@ SAFE, NON-DESTRUCTIVE POC — the general discipline (applies to every class bel
   service that could leak the hit to someone else, and never a third-party host.
 - Capture it: `add_evidence` the raw request/response or callback log, then `record_finding`
   with `poc_evidence_id`/`poc_quote` set to the exact slice proving it. Call `playbook` with the
-  specific class name below (e.g. "sql-injection") when you have a concrete hypothesis to test.""",
+  specific class name below (e.g. "sql-injection") when you have a concrete hypothesis to test.
+- STRONGEST proof is DIFFERENTIAL: run the probe TWICE — once WITH the payload and once as a
+  CONTROL (no payload / benign value) — and save BOTH as separate evidence items. Cite the control
+  as `poc_baseline_evidence_id`/`poc_baseline_quote` and the payload result as `poc_evidence_id`/
+  `poc_quote`, and set `poc_method` (differential | timing | out_of_band). The report then shows the
+  payload changing the observable signal versus the baseline. Identical baseline and payload output
+  means NO effect — that refutes the hypothesis, it is not a finding.""",
 
     "sql-injection": """\
 SQLi — confirm without touching real data:

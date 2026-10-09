@@ -149,12 +149,18 @@ SYSTEMATIC COVERAGE — work toward these, and report any you could not cover as
 - TLS/transport: protocols, ciphers, certificate validity, known TLS CVEs.
 - HTTP hygiene: security headers, cookie flags, CORS, methods, redirects, caching.
 - Content discovery: hidden paths, backups, .git, admin panels, API docs, debug endpoints.
-- App error & debug surface (do NOT skip — a top finding): actively TRIGGER an application error
-  (an unroutable path, a bad `Host` header, malformed input) and inspect the response for a
-  DEBUG / verbose-error page — Django technical-500 + URLconf dump, Flask/Werkzeug console,
-  Rails/Whoops/Ignition, Spring whitelabel/actuator, ASP.NET yellow-screen, PHP display_errors.
-  A clean homepage does NOT mean debug is off; the error path is a separate code path. These pages
-  leak SECRET_KEY / DB creds / full config. Call the `debug-mode` playbook.
+- App error & debug surface (do NOT skip — a top finding): run this on EVERY reachable host AND
+  every origin IP/app you uncover, not just the apex — a static front page routinely hides a
+  dynamic app on another host, path, vhost or origin, and THAT is where debug mode lives. For each,
+  actively TRIGGER an application error (an unroutable path, a bad `Host` header, malformed input/
+  method, a bad Content-Type on POST) and inspect the response for a DEBUG / verbose-error page:
+  Django technical-500 + URLconf dump + DisallowedHost, Flask/Werkzeug `/console`, Rails/Whoops,
+  Laravel Ignition (and `/_ignition/execute-solution` RCE, CVE-2021-3129) / `.env` / `APP_DEBUG`,
+  Symfony `/_profiler`, Spring whitelabel + `/actuator/*`, ASP.NET yellow-screen, PHP display_errors.
+  Also probe unauthenticated env/config/debug ENDPOINTS (e.g. `/api/*/system/environment`, `/debug`,
+  `/__debug__`, `/actuator/env`, `/.env`): one that returns config is a debug/exposure finding in its
+  own right — treat a leaked SECRET_KEY / DB creds / full env as HIGH and chase it to impact. A clean
+  homepage does NOT mean debug is off; the error path is a separate code path. Call `debug-mode`.
 - Known vulnerabilities (the core software-verification loop): for every fingerprinted component,
   `add_component` it, then find its ACTUAL CVEs via `cve_lookup` (OSV, exact package+version) and
   `cve_search` (NVD by product keyword/CPE — catches server software and fresh disclosures OSV

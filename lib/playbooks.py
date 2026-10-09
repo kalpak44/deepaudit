@@ -74,10 +74,12 @@ from middleware, a `__debug__/` toolbar, or a DisallowedHost/traceback page).
 
     "debug-mode": """\
 Framework DEBUG / verbose-error mode (one of the highest-value misconfigurations — it turns any
-error into a config-and-secret leak, and is squarely in scope). You must TRIGGER an application
-error and read what comes back: a clean homepage does NOT mean debug is off, because the error
-path is a different code path. Force one safely, no data touched, one request each — stop as soon
-as a verbose page appears:
+error into a config-and-secret leak, and is squarely in scope). Run this on EVERY reachable host
+AND every origin IP/app you uncover, not just the apex: a static landing page routinely fronts a
+dynamic app on another host, path, vhost or origin, and that backend is where debug mode hides.
+You must TRIGGER an application error and read what comes back: a clean homepage does NOT mean
+debug is off, because the error path is a different code path. Force one safely, no data touched,
+one request each — stop as soon as a verbose page appears:
 - A path that cannot route (random long path, broken trailing segment, bad unicode).
 - A malformed/unexpected `Host:` header; a bad `Content-Type` on a POST; an oversized or garbled
   parameter the view will choke on.
@@ -86,8 +88,10 @@ A positive, per stack (record the exact leaked line as the finding's quote):
   URLconf, or a DisallowedHost page naming ALLOWED_HOSTS — each also prints the Django version.
 - Flask/Werkzeug: the interactive debugger page / `/console` PIN prompt — code execution if unlocked.
 - Rails: full ActionController exception page with a source extract; `better_errors` console.
-- Laravel/Symfony: a Whoops or Ignition page (Laravel Ignition had RCE CVE-2021-3129 — cve_lookup
-  it), the Symfony `/_profiler`, or `APP_DEBUG=true` behaviour.
+- Laravel/Symfony (incl. apps built on them like DreamFactory): a Whoops or Ignition page (Laravel
+  Ignition had RCE CVE-2021-3129 via `/_ignition/execute-solution` — cve_lookup it), the Symfony
+  `/_profiler`, `APP_DEBUG=true` behaviour, a readable `/.env`, or an unauthenticated env/config
+  endpoint (e.g. `/api/v2/system/environment`) that dumps settings/DB config.
 - Spring Boot: whitelabel error with a stack trace, or exposed `/actuator/*` (env/heapdump) — `spring`.
 - ASP.NET: `<customErrors mode="Off">` yellow-screen stack trace.
 - PHP: `display_errors` on — warnings/notices with absolute paths and stack frames inline.
@@ -112,7 +116,12 @@ edge WAF and very often Cloudflare Access too, since the origin usually doesn't 
   404 body — proof a reachable origin exists). Diff origin vs edge responses.
 - Candidate IP found: `curl -k --resolve <host>:443:<ip> https://<host>/` (and port 80). If it
   serves the app WITHOUT the Cloudflare Access redirect, the gate is bypassed at the origin — now
-  run the stack playbook (django / debug-mode / rest-api) against it.
+  run the stack playbook (django / debug-mode / rest-api) against it. ALWAYS run `debug-mode` on a
+  reached origin/app: trigger an error and probe env/config/debug endpoints — the origin is exactly
+  where a DEBUG page or unauthenticated config dump tends to be exposed.
+- Validate the origin really serves THIS target before reporting it as the origin: a box that
+  answers every Host identically (even unrelated domains) or doesn't serve the target's own content
+  is a shared/catch-all vhost, not necessarily this target's origin — say which it is, with evidence.
 CLOUDFLARE ACCESS (Zero Trust) specifics:
 - Service tokens: look for CF-Access-Client-Id / CF-Access-Client-Secret leaked in JS/config/CI.
 - Per-path policy gaps (a policy on `/` but not `/api` or `/healthz`); `/cdn-cgi/access/*` probes.
